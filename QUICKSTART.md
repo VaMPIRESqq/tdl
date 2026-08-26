@@ -31,11 +31,16 @@ Open the printed TIDAL URL, complete login, and paste the full redirect URL show
 ```bash
 python -m tdl                         # Qt6 GUI
 python -m tdl gui                     # Qt6 GUI
+python -m tdl tui                     # terminal UI
 python -m tdl https://tidal.com/browse/track/12345
 python -m tdl --quality hi_res_lossless https://tidal.com/browse/track/12345
 ```
 
-The GUI exposes the same PKCE flow on the Account page. Select `Hi-Res Lossless` on the Download page only after PKCE authentication has completed.
+The GUI exposes the same PKCE flow on the Account page. The TUI exposes PKCE under menu item `3`. Select `Hi-Res Lossless` only after PKCE authentication has completed.
+
+## Lyrics
+
+Open Settings in either interface and enable `Lyrics in audio tags` and/or `Save separate .lrc file`. If both are enabled, lyrics are written into the audio file and saved beside it as an `.lrc` file. FFmpeg is required for embedded audio tags.
 
 ## Tests
 

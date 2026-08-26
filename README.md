@@ -43,13 +43,16 @@ python -m tdl login --pkce
 
 Open the URL, finish TIDAL login, then paste the full redirect URL from the browser address bar. The credentials are saved locally in `~/.tdl/token.json`; they are never printed or sent to another service by this application.
 
-The Qt6 GUI provides the same flow under **Account**. It also prevents selecting Hi-Res downloads until a PKCE token is active.
+The Qt6 GUI provides the same flow under **Account**. The terminal UI is available with `python -m tdl tui`. Both interfaces prevent Hi-Res downloads until a PKCE token is active.
 
 ## Download
 
 ```bash
 # Launch GUI
 python -m tdl
+
+# Launch terminal UI
+python -m tdl tui
 
 # CLI download
 python -m tdl https://tidal.com/browse/track/12345
@@ -74,6 +77,10 @@ Important settings include:
 | `extract_flac` | `true` | Extract FLAC from compatible fragmented streams |
 | `downloads_simultaneous_per_track_max` | `20` | Segment concurrency |
 | `metadata_cover_embed` | `true` | Embed downloaded cover art |
+| `lyrics_embed` | `false` | Write downloaded lyrics into the audio tags |
+| `lyrics_file` | `false` | Save downloaded lyrics as a `.lrc` file |
+
+When both `lyrics_embed` and `lyrics_file` are enabled, the lyrics are stored in both places. FFmpeg is required for embedded tags; the `.lrc` file can be saved without FFmpeg.
 
 ## Development
 

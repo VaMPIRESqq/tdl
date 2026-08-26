@@ -3,6 +3,7 @@
 ## Commands
 - Install: `python -m pip install -r requirements.txt`
 - GUI: `python -m tdl` or `python -m tdl gui`
+- TUI: `python -m tdl tui`
 - CLI download: `python -m tdl [--quality hi_res_lossless] <URL>`
 - PKCE login: `python -m tdl login --pkce`
 - Tests: `python -m unittest discover -v`
@@ -11,6 +12,7 @@
 ## Project Structure
 - `tdl/__main__.py` — CLI routing and Qt launch
 - `tdl/gui.py` — PySide6/Qt6 window and background workers
+- `tdl/tui.py` — dependency-free curses terminal interface
 - `tdl/api.py` — TIDAL V1/auth HTTP client, pagination, and API models
 - `tdl/auth.py` — device authorization and PKCE authentication
 - `tdl/stream.py` — BTS JSON and MPEG-DASH parsing
@@ -26,6 +28,7 @@
 - Keep all network and filesystem work out of the Qt main thread
 - Use `logging`, not ad-hoc debug output in library modules
 - Keep access/refresh tokens out of logs and error messages
+- Keep the TUI dependency-free; reuse the API, auth, settings, and downloader modules
 - Sanitize every user/API-derived filename before filesystem operations
 - Preserve `~/.tdl/settings.json` and `~/.tdl/token.json` compatibility
 

@@ -15,6 +15,7 @@ from tdl.downloader import HiResDownloader
 from tdl.models import Quality, Settings, Track
 from tdl.paths import extension_for, parse_media_url, sanitize_filename
 from tdl.stream import parse_bts, parse_m3u8, parse_mpd
+from tdl.tui import QUALITY_LABELS, TuiApp
 
 
 class CoreTests(unittest.TestCase):
@@ -90,6 +91,11 @@ class CoreTests(unittest.TestCase):
         downloader = HiResDownloader(TidalApi(), settings)
         pool = downloader.http.get_adapter("https://").poolmanager.connection_pool_kw["maxsize"]
         self.assertEqual(pool, 20)
+
+    def test_tui_quality_labels_cover_all_audio_options(self) -> None:
+        self.assertEqual(set(QUALITY_LABELS), set(Quality))
+        self.assertTrue(all(label for label in QUALITY_LABELS.values()))
+        self.assertTrue(callable(TuiApp._artist))
 
     def test_partial_file_is_not_reported_as_download(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

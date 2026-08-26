@@ -15,7 +15,7 @@ from .storage import load_settings
 
 def main(argv: list[str] | None = None) -> int:
     raw_args = list(sys.argv[1:] if argv is None else argv)
-    commands = {"login", "logout", "gui"}
+    commands = {"login", "logout", "gui", "tui"}
     # Keep bare URL downloads ergonomic while still allowing argparse
     # subcommands. A URL is otherwise consumed as a subcommand value when it
     # follows a global option such as --quality.
@@ -44,12 +44,16 @@ def main(argv: list[str] | None = None) -> int:
     login.add_argument("--pkce", action="store_true", help="use PKCE authentication required for Hi-Res")
     subparsers.add_parser("logout", help="remove saved credentials")
     subparsers.add_parser("gui", help="launch the Qt6 interface")
+    subparsers.add_parser("tui", help="launch the terminal interface")
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
     if args.command == "gui" or (args.command is None and not args.urls):
         from .gui import run
         return run()
+    if args.command == "tui":
+        from .tui import run_tui
+        return run_tui()
 
     settings = load_settings()
     if args.quality:
