@@ -19,7 +19,7 @@ from requests.adapters import HTTPAdapter
 
 from .api import TidalApi
 from .crypto import decrypt_file, decrypt_security_token
-from .models import PlaybackInfo, Settings, Track
+from .models import PlaybackInfo, Quality, Settings, Track
 from .paths import existing_file, extension_for, parse_media_url, sanitize_filename, track_path, unique_path
 from .stream import fetch_track_stream, fetch_video_segments
 
@@ -93,23 +93,45 @@ class HiResDownloader:
             raise DownloadError(f"ffmpeg video conversion failed: {result.stderr.strip()}")
 
     def _download_tracks(self, tracks: list[Track], playlist_name: str | None = None) -> list[Path]:
+        """Download a collection through the same per-track path as a track URL.
+
+        The objects returned by album/playlist/artist endpoints are collection
+        references and can contain only partial track metadata. In particular,
+        they must not be used to request playback info in bulk: the Hi-Res
+        entitlement is resolved by the individual track playback endpoint.
+        Hydrate every reference with ``GET /tracks/{id}``, then download it
+        sequentially. This deliberately keeps one playback-info request and
+        one stream download per song.
+        """
         completed: list[Path] = []
-        for index, track in enumerate(tracks, 1):
-            self.progress(index - 1, len(tracks), f"{track.artist_name} - {track.display_title}")
+        total = len(tracks)
+        for index, track_reference in enumerate(tracks, 1):
+            title = track_reference.display_title or str(track_reference.id)
+            self.progress(index - 1, total, f"{track_reference.artist_name} - {title}")
             try:
-                completed.append(self.download_track(track.id, playlist_name=playlist_name))
+                if not track_reference.id:
+                    raise DownloadError("Collection item has no track ID")
+                # Do not pass the collection response further down. Fetch the
+                # canonical track resource first so Hi-Res playback is always
+                # negotiated as if this were a standalone track URL.
+                track = self.api.get_track(track_reference.id)
+                completed.append(self._download_track_data(track, playlist_name=playlist_name))
             except Exception as exc:  # continue collection downloads and report the failed track
-                log.exception("Track %s failed", track.id)
-                self.progress(index, len(tracks), f"Failed: {track.display_title}: {exc}")
-            if self.settings.download_delay and index < len(tracks):
+                log.exception("Track %s failed", track_reference.id)
+                self.progress(index, total, f"Failed: {title}: {exc}")
+            if self.settings.download_delay and index < total:
                 delay = random.uniform(self.settings.download_delay_sec_min, self.settings.download_delay_sec_max)
                 time.sleep(max(0.0, delay))
         self._write_playlist(completed, playlist_name)
-        self.progress(len(tracks), len(tracks), f"Completed {len(completed)}/{len(tracks)}")
+        self.progress(total, total, f"Completed {len(completed)}/{total}")
         return completed
 
     def download_track(self, track_id: int, playlist_name: str | None = None) -> Path:
-        track = self.api.get_track(track_id)
+        """Fetch and download one canonical track resource directly."""
+        return self._download_track_data(self.api.get_track(track_id), playlist_name=playlist_name)
+
+    def _download_track_data(self, track: Track, playlist_name: str | None = None) -> Path:
+        """Download one already-hydrated track using its own playback request."""
         if track.album and not track.album.artists:
             try:
                 track.album = self.api.get_album(track.album.id)
@@ -126,6 +148,10 @@ class HiResDownloader:
                 return found
 
         manifest, playback = fetch_track_stream(self.api, track.id, self.settings.quality_audio)
+        if self.settings.quality_audio is Quality.HIRES and playback.bit_depth is not None and playback.bit_depth < 24:
+            raise DownloadError(
+                f"Track {track.id} returned {playback.bit_depth}-bit audio instead of Hi-Res Lossless"
+            )
         urls = self._absolute_urls(manifest.urls)
         if not urls:
             raise DownloadError(f"Track {track.id} has no stream segments")
@@ -157,9 +183,15 @@ class HiResDownloader:
             partial.unlink(missing_ok=True)
             raise
 
+    @staticmethod
+    def _effective_quality(playback: PlaybackInfo) -> str | None:
+        """Prefer the stream bit depth over TIDAL's sometimes stale label."""
+        if playback.bit_depth is not None and playback.bit_depth >= 24:
+            return Quality.HIRES.api_value
+        return playback.audio_quality
+
     def _report_saved(self, path: Path) -> None:
         log.info("Saved song: %s", path)
-        print(f"Saved: {path}", flush=True)
         self.progress(1, 1, f"Saved: {path}")
 
     def _absolute_urls(self, urls: list[str]) -> list[str]:
@@ -268,7 +300,7 @@ class HiResDownloader:
                 "album_artist": track.album.album_artist if track.album else track.artist_name,
                 "track": str(track.track_num or ""), "disc": str(track.volume_num or ""),
                 "date": track.album.year_string if track.album else "", "copyright": track.copyright or "",
-                "isrc": track.isrc or "", "comment": playback.audio_quality or "",
+                "isrc": track.isrc or "", "comment": self._effective_quality(playback) or "",
                 "replaygain_album_gain": f"{playback.album_replay_gain:.2f} dB" if self.settings.metadata_replay_gain and playback.album_replay_gain is not None else "",
                 "replaygain_track_gain": f"{playback.track_replay_gain:.2f} dB" if self.settings.metadata_replay_gain and playback.track_replay_gain is not None else "",
                 "replaygain_album_peak": f"{playback.album_peak_amplitude:.6f}" if self.settings.metadata_replay_gain and playback.album_peak_amplitude is not None else "",
@@ -293,7 +325,7 @@ class HiResDownloader:
         sidecar = path.with_name(path.name + ".json")
         sidecar.write_text(json.dumps({"track_id": track.id, "title": track.display_title,
             "artist": track.artist_name, "album": track.album.name if track.album else None,
-            "quality": playback.audio_quality, "bit_depth": playback.bit_depth,
+            "quality": HiResDownloader._effective_quality(playback), "bit_depth": playback.bit_depth,
             "sample_rate": playback.sample_rate}, indent=2) + "\n", encoding="utf-8")
 
     def _write_playlist(self, paths: list[Path], playlist_name: str | None) -> None:

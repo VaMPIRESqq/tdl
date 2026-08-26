@@ -14,8 +14,8 @@ from unittest.mock import patch
 from tdl.auth import TidalAuth
 from tdl.api import TidalApi
 from tdl.crypto import decrypt_file
-from tdl.downloader import HiResDownloader
-from tdl.models import Quality, Settings, Track
+from tdl.downloader import DownloadError, HiResDownloader
+from tdl.models import PlaybackInfo, Quality, Settings, StreamManifest, Track
 from tdl.paths import extension_for, parse_media_url, sanitize_filename
 from tdl.stream import parse_bts, parse_m3u8, parse_mpd
 from tdl.tui import QUALITY_LABELS, TuiApp
@@ -129,6 +129,82 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(app.focused_action, 4)
         app._move_action(1)
         self.assertEqual(app.focused_action, 0)
+
+    def test_collection_download_hydrates_each_track_before_download(self) -> None:
+        settings = Settings(quality_audio=Quality.HIRES, download_delay=False)
+        api = TidalApi()
+        downloader = HiResDownloader(api, settings)
+        references = [Track(id=101, title="Reference one"), Track(id=202, title="Reference two")]
+        canonical = [Track(id=101, title="Canonical one"), Track(id=202, title="Canonical two")]
+        downloaded = [Path("one.flac"), Path("two.flac")]
+        with patch.object(api, "get_track", side_effect=canonical) as get_track:
+            with patch.object(downloader, "_download_track_data", side_effect=downloaded) as download_track:
+                result = downloader._download_tracks(references)
+        self.assertEqual(result, downloaded)
+        self.assertEqual(get_track.call_args_list[0].args, (101,))
+        self.assertEqual(get_track.call_args_list[1].args, (202,))
+        self.assertEqual(download_track.call_args_list[0].args, (canonical[0],))
+        self.assertEqual(download_track.call_args_list[1].args, (canonical[1],))
+
+    def test_collection_track_data_requests_hires_for_each_track(self) -> None:
+        settings = Settings(quality_audio=Quality.HIRES, download_delay=False)
+        api = TidalApi()
+        downloader = HiResDownloader(api, settings)
+        tracks = [Track(id=401, title="First"), Track(id=402, title="Second")]
+        playback = PlaybackInfo(track_id=0)
+        manifest = StreamManifest(urls=["https://cdn.test/segment"], codecs="aac")
+        with patch.object(api, "get_track", side_effect=tracks):
+            with patch("tdl.downloader.fetch_track_stream", return_value=(manifest, playback)) as fetch_stream:
+                with patch.object(downloader, "_absolute_urls", return_value=["https://cdn.test/segment"]):
+                    with patch.object(downloader, "_download_segments", side_effect=lambda _urls, path: path.write_bytes(b"audio")):
+                        with patch.object(downloader, "_report_saved"):
+                            with patch.object(downloader, "_write_track_artifacts"):
+                                with tempfile.TemporaryDirectory() as directory:
+                                    downloader.settings.download_base_path = directory
+                                    downloader._download_tracks(tracks)
+        self.assertEqual(fetch_stream.call_count, 2)
+        self.assertEqual([call.args[1:] for call in fetch_stream.call_args_list], [(401, Quality.HIRES), (402, Quality.HIRES)])
+
+    def test_hires_download_rejects_lower_bit_depth(self) -> None:
+        settings = Settings(quality_audio=Quality.HIRES)
+        api = TidalApi()
+        downloader = HiResDownloader(api, settings)
+        track = Track(id=501, title="Fallback track")
+        playback = PlaybackInfo(track_id=501, audio_quality=Quality.LOSSLESS.api_value, bit_depth=16)
+        manifest = StreamManifest(urls=["https://cdn.test/segment"], codecs="flac")
+        with patch("tdl.downloader.fetch_track_stream", return_value=(manifest, playback)):
+            with self.assertRaisesRegex(DownloadError, "returned 16-bit audio instead of Hi-Res Lossless"):
+                downloader._download_track_data(track)
+
+    def test_hires_download_accepts_24_bit_lossless_label(self) -> None:
+        settings = Settings(quality_audio=Quality.HIRES)
+        api = TidalApi()
+        downloader = HiResDownloader(api, settings)
+        track = Track(id=502, title="24-bit track")
+        playback = PlaybackInfo(track_id=502, audio_quality=Quality.LOSSLESS.api_value, bit_depth=24, sample_rate=44100)
+        manifest = StreamManifest(urls=["https://cdn.test/segment"], codecs="flac")
+        with tempfile.TemporaryDirectory() as directory:
+            downloader.settings.download_base_path = directory
+            with patch("tdl.downloader.fetch_track_stream", return_value=(manifest, playback)):
+                with patch.object(downloader, "_download_segments", side_effect=lambda _urls, path: path.write_bytes(b"audio")):
+                    with patch.object(downloader, "_report_saved"):
+                        with patch.object(downloader, "_write_track_artifacts"):
+                            result = downloader._download_track_data(track)
+            self.assertTrue(result.name.endswith(".flac"))
+            self.assertEqual(result.read_bytes(), b"audio")
+
+    def test_single_track_download_uses_same_hydrated_pipeline(self) -> None:
+        settings = Settings()
+        api = TidalApi()
+        downloader = HiResDownloader(api, settings)
+        track = Track(id=303, title="Canonical track")
+        expected = Path("track.flac")
+        with patch.object(api, "get_track", return_value=track) as get_track:
+            with patch.object(downloader, "_download_track_data", return_value=expected) as download_track:
+                result = downloader.download_track(303)
+        self.assertEqual(result, expected)
+        get_track.assert_called_once_with(303)
+        download_track.assert_called_once_with(track, playlist_name=None)
 
     def test_partial_file_is_not_reported_as_download(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

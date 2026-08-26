@@ -592,7 +592,6 @@ class MainWindow(QMainWindow):
         if not path or path in self._reported_download_paths:
             return
         self._reported_download_paths.add(path)
-        print(f"Saved: {path}", flush=True)
         self.download_log.append(path)
         self.download_log.ensureCursorVisible()
 
