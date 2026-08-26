@@ -246,24 +246,20 @@ class MainWindow(QMainWindow):
         self.results.setWordWrap(False)
         self.results.setTextElideMode(Qt.TextElideMode.ElideRight)
         self.results.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.results.setMaximumWidth(520)
-        # Keep search rows compact even when TIDAL returns very long names.
-        # The full value remains available in the cell tooltip.
+        # Match qBittorrent-style result tables: the table follows the window
+        # width, while users can drag the boundaries between columns.
         header = self.results.horizontalHeader()
-        header.setStretchLastSection(False)
+        header.setStretchLastSection(True)
         header.setSectionsMovable(False)
         for column in range(4):
-            header.setSectionResizeMode(column, QHeaderView.ResizeMode.Fixed)
+            header.setSectionResizeMode(column, QHeaderView.ResizeMode.Interactive)
         header.setMinimumSectionSize(1)
-        header.resizeSection(0, 64)
-        header.resizeSection(1, 180)
-        header.resizeSection(2, 110)
-        header.resizeSection(3, 88)
+        self._search_columns_initialized = False
         layout.addWidget(self.results, 1)
-        # Apply once more after the parent layout has calculated the table
-        # geometry; some Qt styles otherwise distribute sections equally.
+        # Apply initial widths after the parent layout has calculated the table
+        # geometry without resetting widths after subsequent searches.
         from PySide6.QtCore import QTimer
-        QTimer.singleShot(0, lambda: self._fix_search_columns())
+        QTimer.singleShot(0, self._fix_search_columns)
         return page
 
     def _build_account_page(self) -> QWidget:
@@ -625,14 +621,13 @@ class MainWindow(QMainWindow):
         self._run(lambda _emit: self.api.search(query), self._render_results)
 
     def _fix_search_columns(self) -> None:
+        if self._search_columns_initialized:
+            return
         header = self.results.horizontalHeader()
         widths = (64, 150, 96, 88)
         for column, width in enumerate(widths):
             header.resizeSection(column, width)
-        self.results.setColumnWidth(0, widths[0])
-        self.results.setColumnWidth(1, widths[1])
-        self.results.setColumnWidth(2, widths[2])
-        self.results.setColumnWidth(3, widths[3])
+        self._search_columns_initialized = True
 
     @staticmethod
     def _result_artist(item: dict) -> str:
