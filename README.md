@@ -1,226 +1,87 @@
 <div align="center">
+
 # tdl
 
-> Tidal music downloader with lossless quality — CLI, TUI, and GUI
-
-
-<p align="center">
-  <a href="https://github.com/epicsagas/tdl/stargazers"><img alt="Stars" src="https://img.shields.io/github/stars/epicsagas/tdl?style=for-the-badge&labelColor=0d1117&color=ffd700&logo=github&logoColor=white" /></a>
-  <a href="https://github.com/epicsagas/tdl/network/members"><img alt="Forks" src="https://img.shields.io/github/forks/epicsagas/tdl?style=for-the-badge&labelColor=0d1117&color=2ecc71&logo=github&logoColor=white" /></a>
-  <a href="https://github.com/epicsagas/tdl/issues"><img alt="Issues" src="https://img.shields.io/github/issues/epicsagas/tdl?style=for-the-badge&labelColor=0d1117&color=ff6b6b&logo=github&logoColor=white" /></a>
-  <a href="https://github.com/epicsagas/tdl/commits/main"><img alt="Last commit" src="https://img.shields.io/github/last-commit/epicsagas/tdl?style=for-the-badge&labelColor=0d1117&color=58a6ff&logo=git&logoColor=white" /></a>
-</p>
-<p align="center">
-  <a href="https://crates.io/crates/tdl"><img alt="Crates.io" src="https://img.shields.io/crates/v/tdl?style=for-the-badge&labelColor=0d1117&color=fc8d62&logo=rust&logoColor=white" /></a>
-  <a href="https://crates.io/crates/tdl"><img alt="Downloads" src="https://img.shields.io/crates/d/tdl?style=for-the-badge&labelColor=0d1117&color=3498db&logo=rust&logoColor=white" /></a>
-  <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-Apache--2.0-3fb950?style=for-the-badge&labelColor=0d1117" /></a>
-  <img alt="Rust" src="https://img.shields.io/badge/rust-d73a49?style=for-the-badge&labelColor=0d1117&logo=rust&logoColor=white" />
-  <a href="https://buymeacoffee.com/epicsaga"><img alt="Buy Me a Coffee" src="https://img.shields.io/badge/buy_me_a_coffee-FFDD00?style=for-the-badge&labelColor=0d1117&logo=buymeacoffee&logoColor=black" /></a>
-</p>
-
-<p>
-<strong>English</strong> | <a href="docs/i18n/README.ko.md">한국어</a> | <a href="docs/i18n/README.ja.md">日本語</a> | <a href="docs/i18n/README.zh-CN.md">简体中文</a> | <a href="docs/i18n/README.es.md">Español</a> | <a href="docs/i18n/README.fr.md">Français</a> | <a href="docs/i18n/README.de.md">Deutsch</a> | <a href="docs/i18n/README.pt.md">Português</a> | <a href="docs/i18n/README.ru.md">Русский</a> | <a href="docs/i18n/README.it.md">Italiano</a>
-</p>
-
+> TIDAL downloader with Hi-Res Lossless support, PKCE authentication, and a Qt6 desktop GUI
 
 </div>
 
-<img src="docs/assets/favorites.png" alt="favorites gui" width="100%" />
-
 > **WARNING: Unauthorized distribution of copyrighted music is illegal.**
-> This tool is for personal use only. Downloaded content must not be shared, redistributed, or made publicly available. Respect artists and copyright law.
-
-## Quick Start
-
-```bash
-# macOS / Linux
-brew install epicsagas/tap/tdl
-
-# Pre-built binary (Linux/macOS/Windows)
-curl --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/epicsagas/tdl/main/scripts/install.sh | sh
-
-# From source
-cargo install --git https://github.com/epicsagas/tdl
-```
-
-```bash
-tdl login              # OAuth device flow
-tdl dl <tidal-url>     # Download track/album/playlist
-```
+> This tool is for personal use only. Downloaded content must not be shared, redistributed, or made publicly available. Respect artists, copyright law, and TIDAL terms.
 
 ## Features
 
-| | Feature | Why it matters |
-|--|---------|----------------|
-| 🎵 | **Lossless quality** | HiRes Lossless (24-bit/192kHz) support |
-| 🖥️ | **Three interfaces** | CLI, TUI, and GUI — choose your style |
-| ⚡ | **Parallel downloads** | Concurrent segment fetching with retry |
-| 🏷️ | **Metadata tagging** | FLAC/M4A tags with ReplayGain, lyrics, cover art |
-| 🔄 | **PKCE login** | Secure OAuth for HiRes quality |
-| 📺 | **Video support** | Download and convert music videos to MP4 |
-| 🎨 | **TUI & GUI** | Browse favorites, search, download interactively |
+- Hi-Res Lossless playback requests through `audioquality=HI_RES_LOSSLESS`
+- PKCE login with a browser redirect URL exchange
+- Device authorization login for non-Hi-Res use
+- BTS JSON and MPEG-DASH manifest parsing
+- Concurrent segment downloads with retry and exponential backoff
+- AES-128-CTR media decryption and TIDAL security-token decoding
+- FLAC extraction, FFmpeg metadata tags, cover art, lyrics, and collision-safe paths
+- PySide6/Qt6 GUI with background search, authentication, settings, and download queue
+- CLI for scripted track, album, and playlist downloads
 
-## Installation
+## Install
 
-### Homebrew (macOS/Linux)
-
-```bash
-brew install epicsagas/tap/tdl
-```
-
-### Pre-built Binary
+Python 3.11+ is required.
 
 ```bash
-# macOS / Linux
-curl --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/epicsagas/tdl/main/scripts/install.sh | sh
-
-# Windows (PowerShell)
-irm https://raw.githubusercontent.com/epicsagas/tdl/main/scripts/install.ps1 | iex
+python -m venv .venv
+. .venv/bin/activate                 # Windows: .venv\\Scripts\\activate
+python -m pip install -r requirements.txt
 ```
 
-### Cargo
+Install FFmpeg separately if you want embedded tags, cover art, lyrics, or FLAC extraction.
+
+## Authentication
+
+PKCE is the required login method for Hi-Res Lossless:
 
 ```bash
-cargo install tdl
+python -m tdl login --pkce
 ```
 
-### From Source
+Open the URL, finish TIDAL login, then paste the full redirect URL from the browser address bar. The credentials are saved locally in `~/.tdl/token.json`; they are never printed or sent to another service by this application.
+
+The Qt6 GUI provides the same flow under **Account**. It also prevents selecting Hi-Res downloads until a PKCE token is active.
+
+## Download
 
 ```bash
-git clone https://github.com/epicsagas/tdl.git
-cd tdl
-cargo build --release
-# Binary: target/release/tdl
+# Launch GUI
+python -m tdl
+
+# CLI download
+python -m tdl https://tidal.com/browse/track/12345
+python -m tdl --quality hi_res_lossless https://tidal.com/browse/track/12345
+python -m tdl https://tidal.com/browse/album/67890
+python -m tdl https://tidal.com/browse/playlist/playlist-id
 ```
 
-## Usage
+Supported URL types are tracks, albums, playlists, artists, videos, and mixes where the corresponding endpoint provides downloadable media. The Python migration currently prioritizes the Hi-Res audio path.
 
-### Login
+## Configuration
 
-Standard OAuth (up to HiFi quality):
+Settings are stored in `~/.tdl/settings.json`. Existing settings files from the previous version are read, including `path_binary_ffmpeg`, `metadata_cover_dimension`, and the `quality_audio` enum values.
+
+Important settings include:
+
+| Setting | Default | Purpose |
+|---|---:|---|
+| `quality_audio` | `low320k` | `low96k`, `low320k`, `high_lossless`, or `hi_res_lossless` |
+| `download_base_path` | `~/download` | Destination root |
+| `skip_existing` | `true` | Avoid duplicate downloads |
+| `extract_flac` | `true` | Extract FLAC from compatible fragmented streams |
+| `downloads_simultaneous_per_track_max` | `20` | Segment concurrency |
+| `metadata_cover_embed` | `true` | Embed downloaded cover art |
+
+## Development
 
 ```bash
-tdl login
+python -m unittest discover -v
+python -m compileall -q tdl tests run.py
 ```
-
-PKCE flow for HiRes Lossless:
-
-```bash
-tdl login --pkce
-```
-
-### Download
-
-```bash
-# Track
-tdl dl https://tidal.com/browse/track/12345
-
-# Album / Playlist / Mix
-tdl dl https://tidal.com/browse/album/67890
-tdl dl https://tidal.com/browse/playlist/abc-uuid
-
-# Multiple URLs
-tdl dl <url1> <url2>
-
-# From file
-tdl dl --list urls.txt
-```
-
-### TUI & GUI
-
-```bash
-# Terminal UI
-tdl tui
-
-# GUI (Tauri)
-tdl gui
-# or just
-tdl
-```
-
-### Configuration
-
-Settings file: `~/.tdl/settings.json`
-
-```bash
-# Interactive wizard
-tdl cfg
-
-# Open in editor
-tdl cfg --editor
-```
-
-| Setting | Default | Description |
-|---------|---------|-------------|
-| `download_base_path` | `~/download` | Root directory |
-| `quality_audio` | `low_320k` | `low_96k` / `low_320k` / `high_lossless` / `hi_res_lossless` |
-| `quality_video` | `p480` | `p360` / `p480` / `p720` / `p1080` |
-| `track_num_pad_zero` | `true` | Zero-pad track numbers |
-| `playlist_folder` | `true` | Save playlists under `Playlists/` |
-| `skip_existing` | `true` | Skip existing files |
-| `extract_flac` | `true` | Extract FLAC from M4A/MP4 |
-| `video_convert_mp4` | `true` | Convert TS to MP4 |
-
-## Output Structure
-
-```
-{base}/
-  {artist}/
-    {album}/
-      01. Track Title.flac
-      02. Another Track.flac
-      cover.jpg
-
-  Playlists/               # when playlist_folder = true
-    My Playlist/
-      01. Artist - Title.flac
-      My Playlist.m3u
-```
-
-## Requirements
-
-- **OS**: macOS 12+ / Ubuntu 20.04+ / Windows 10+
-- **Rust**: 1.80+ (when building from source)
-- **FFmpeg**: Optional — for video conversion and FLAC extraction
-- **Tidal**: Premium, HiFi, or HiFi Plus subscription
-
-## Troubleshooting
-
-<details>
-<summary>command not found after install</summary>
-
-Add the install path to your PATH:
-
-```bash
-# Rust/Cargo
-export PATH="$HOME/.cargo/bin:$PATH"
-
-# Local install
-export PATH="$HOME/.local/bin:$PATH"
-```
-</details>
-
-<details>
-<summary>FFmpeg not found error</summary>
-
-Install FFmpeg:
-
-```bash
-# macOS
-brew install ffmpeg
-
-# Ubuntu/Debian
-sudo apt install ffmpeg
-
-# Windows (Chocolatey)
-choco install ffmpeg
-```
-</details>
-
-## Contributing
-
-See [CONTRIBUTING.md](CONTRIBUTING.md). PRs welcome — check open issues labeled `good first issue`.
 
 ## License
 
-[Apache-2.0](LICENSE) © 2025
+[Apache-2.0](LICENSE)
