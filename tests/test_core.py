@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import io
 import json
+import logging
 import tempfile
 import unittest
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
@@ -96,6 +99,36 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(set(QUALITY_LABELS), set(Quality))
         self.assertTrue(all(label for label in QUALITY_LABELS.values()))
         self.assertTrue(callable(TuiApp._artist))
+
+    def test_tui_quiet_download_suppresses_library_output(self) -> None:
+        app = TuiApp.__new__(TuiApp)
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with redirect_stdout(stdout), redirect_stderr(stderr):
+            with app._quiet_download():
+                print("saved path")
+                logging.getLogger("tdl.test").error("download log")
+        self.assertEqual(stdout.getvalue(), "")
+        self.assertEqual(stderr.getvalue(), "")
+
+    def test_tui_dashboard_formatters_fit_and_fill(self) -> None:
+        self.assertEqual(TuiApp._fit("short", 8), "short")
+        self.assertEqual(TuiApp._fit("a very long path", 8), "a ver...")
+        self.assertEqual(TuiApp._progress_bar(0, 0, 8), "[------]")
+        self.assertEqual(TuiApp._progress_bar(5, 10, 8), "[###---]")
+        self.assertEqual(TuiApp._progress_bar(10, 10, 8), "[######]")
+
+    def test_tui_mouse_zones_and_action_focus(self) -> None:
+        zones = [(4, 2, 12, "download"), (4, 14, 20, "search")]
+        self.assertEqual(TuiApp._hit_test(zones, 8, 4), "download")
+        self.assertEqual(TuiApp._hit_test(zones, 13, 4), None)
+        self.assertEqual(TuiApp._hit_test(zones, None, 4), None)
+        app = TuiApp.__new__(TuiApp)
+        app.focused_action = 0
+        app._move_action(-1)
+        self.assertEqual(app.focused_action, 4)
+        app._move_action(1)
+        self.assertEqual(app.focused_action, 0)
 
     def test_partial_file_is_not_reported_as_download(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
