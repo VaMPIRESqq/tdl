@@ -9,8 +9,9 @@ from typing import Any
 
 from PySide6.QtCore import QObject, QThread, Qt, Signal, Slot
 from PySide6.QtCore import QUrl
-from PySide6.QtGui import QAction, QDesktopServices
+from PySide6.QtGui import QAction, QDesktopServices, QGuiApplication
 from PySide6.QtWidgets import (
+    QMenu,
     QApplication,
     QCheckBox,
     QComboBox,
@@ -26,6 +27,7 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMainWindow,
+    QPlainTextEdit,
     QMessageBox,
     QPushButton,
     QProgressBar,
@@ -42,7 +44,7 @@ from PySide6.QtWidgets import (
 
 from .api import TidalApi
 from .auth import TidalAuth
-from .downloader import HiResDownloader
+from .downloader import HiResDownloader, load_downloaded_file_info
 from .models import Quality, Settings
 from .storage import load_settings, save_settings
 
@@ -109,6 +111,7 @@ class MainWindow(QMainWindow):
         self._workers: list[TaskWorker] = []
         self._bridges: list[TaskBridge] = []
         self._reported_download_paths: set[str] = set()
+        self._session_files: list[Path] = []
         self.setWindowTitle("tdl | TIDAL Hi-Res Downloader")
         self.resize(1180, 760)
         self.setMinimumSize(900, 600)
@@ -182,10 +185,19 @@ class MainWindow(QMainWindow):
         self.url_input.setPlaceholderText("https://tidal.com/browse/track/...")
         self.url_input.returnPressed.connect(self.start_download)
         row.addWidget(self.url_input, 1)
-        self.download_button = QPushButton("Download")
+        self.download_button = QPushButton("Add to queue")
         self.download_button.clicked.connect(self.start_download)
         row.addWidget(self.download_button)
         layout.addLayout(row)
+        bulk_row = QHBoxLayout()
+        self.bulk_urls = QPlainTextEdit()
+        self.bulk_urls.setPlaceholderText("Multiple TIDAL URLs, one per line")
+        self.bulk_urls.setMaximumHeight(74)
+        bulk_row.addWidget(self.bulk_urls, 1)
+        add_bulk_button = QPushButton("Add links")
+        add_bulk_button.clicked.connect(self.add_bulk_urls)
+        bulk_row.addWidget(add_bulk_button)
+        layout.addLayout(bulk_row)
 
         quality_box = QGroupBox("Audio quality")
         quality_layout = QGridLayout(quality_box)
@@ -206,19 +218,43 @@ class MainWindow(QMainWindow):
         queue_layout = QVBoxLayout(queue_box)
         self.queue = QTableWidget(0, 3)
         self.queue.setHorizontalHeaderLabels(("Item", "Progress", "Status"))
-        self.queue.horizontalHeader().setStretchLastSection(True)
-        self.queue.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        self.queue.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        self.queue.cellDoubleClicked.connect(self._show_queue_file_info)
+        self.queue.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.queue.customContextMenuRequested.connect(self._queue_context_menu)
+        self.queue.setWordWrap(False)
+        self.queue.setTextElideMode(Qt.TextElideMode.ElideRight)
+        self.queue.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        # Keep queue columns interactive, matching the Search table: users can
+        # drag column boundaries while the table remains within the window.
+        header = self.queue.horizontalHeader()
+        header.setStretchLastSection(True)
+        header.setSectionsMovable(False)
+        for column in range(3):
+            header.setSectionResizeMode(column, QHeaderView.ResizeMode.Interactive)
+        header.setMinimumSectionSize(1)
+        self._queue_columns_initialized = False
+        from PySide6.QtCore import QTimer
+        QTimer.singleShot(0, self._fix_queue_columns)
         queue_layout.addWidget(self.queue)
         layout.addWidget(queue_box, 1)
 
         history_box = QGroupBox("Saved files")
         history_layout = QVBoxLayout(history_box)
+        self.library = QTableWidget(0, 4)
+        self.library.setHorizontalHeaderLabels(("File", "Size", "Technical", "Location"))
+        self.library.setWordWrap(False)
+        self.library.setTextElideMode(Qt.TextElideMode.ElideRight)
+        self.library.horizontalHeader().setStretchLastSection(True)
+        self.library.cellDoubleClicked.connect(self._show_library_file_info)
+        self.library.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.library.customContextMenuRequested.connect(self._library_context_menu)
+        history_layout.addWidget(self.library)
         self.download_log = QTextEdit()
         self.download_log.setReadOnly(True)
+        self.download_log.setToolTip("Double-click a saved path in the queue to inspect file information")
         self.download_log.setPlaceholderText("Saved file paths will appear here")
         self.download_log.setMinimumHeight(90)
-        self.download_log.setMaximumHeight(150)
+        self.download_log.setMaximumHeight(90)
         self.download_log.setLineWrapMode(QTextEdit.LineWrapMode.NoWrap)
         history_layout.addWidget(self.download_log)
         layout.addWidget(history_box)
@@ -545,6 +581,26 @@ class MainWindow(QMainWindow):
         self.auth.logout()
         self._set_logged_in(False)
 
+    @staticmethod
+    def _normalise_urls(text: str) -> list[str]:
+        urls: list[str] = []
+        seen: set[str] = set()
+        for value in text.splitlines():
+            url = value.strip()
+            if url.startswith(("http://", "https://")) and url not in seen:
+                seen.add(url)
+                urls.append(url)
+        return urls
+
+    def add_bulk_urls(self) -> None:
+        urls = self._normalise_urls(self.bulk_urls.toPlainText())
+        if not urls:
+            return
+        self.bulk_urls.clear()
+        for url in urls:
+            self.url_input.setText(url)
+            self.start_download()
+
     def start_download(self) -> None:
         url = self.url_input.text().strip()
         if not url:
@@ -557,7 +613,10 @@ class MainWindow(QMainWindow):
         self.settings.quality_audio = quality
         row = self.queue.rowCount()
         self.queue.insertRow(row)
-        self.queue.setItem(row, 0, QTableWidgetItem(url))
+        item = QTableWidgetItem(url)
+        item.setToolTip(url)
+        self.queue.setItem(row, 0, item)
+        self.queue.setToolTip("Double-click a completed row to view file information")
         progress = QProgressBar()
         progress.setRange(0, 100)
         self.queue.setCellWidget(row, 1, progress)
@@ -577,6 +636,15 @@ class MainWindow(QMainWindow):
             raise RuntimeError("Session expired. Log in before downloading.")
         return HiResDownloader(self.api, self.settings, emit).download_url(url)
 
+    def _fix_queue_columns(self) -> None:
+        if self._queue_columns_initialized:
+            return
+        header = self.queue.horizontalHeader()
+        widths = (360, 120, 180)
+        for column, width in enumerate(widths):
+            header.resizeSection(column, width)
+        self._queue_columns_initialized = True
+
     def _update_queue(self, row: int, value: int, message: str) -> None:
         if row >= self.queue.rowCount():
             return
@@ -587,13 +655,125 @@ class MainWindow(QMainWindow):
         if item:
             item.setText(message)
 
+    def _refresh_library(self) -> None:
+        """Refresh only files produced during this GUI session."""
+        self.library.setRowCount(0)
+        for path in self._session_files:
+            if not path.is_file():
+                continue
+            info = load_downloaded_file_info(path, self.settings.ffmpeg_path)
+            row = self.library.rowCount()
+            self.library.insertRow(row)
+            values = (path.name, info.size_display, info.technical_display, str(path.parent))
+            for column, value in enumerate(values):
+                item = QTableWidgetItem(value)
+                item.setToolTip(str(path))
+                if column == 0:
+                    item.setData(Qt.ItemDataRole.UserRole, str(path))
+                self.library.setItem(row, column, item)
+
+    def _queue_context_menu(self, position: Any) -> None:
+        row = self.queue.rowAt(position.y())
+        if row < 0:
+            return
+        self.queue.selectRow(row)
+        menu = QMenu(self)
+        info_action = menu.addAction("File information")
+        play_action = menu.addAction("Play")
+        open_action = menu.addAction("Open file")
+        folder_action = menu.addAction("Open folder")
+        copy_action = menu.addAction("Copy path")
+        menu.addSeparator()
+        remove_action = menu.addAction("Remove from queue")
+        chosen = menu.exec(self.queue.viewport().mapToGlobal(position))
+        if chosen == info_action:
+            self._show_queue_file_info(row, 0)
+        elif chosen == play_action:
+            self._open_queue_path(row, False)
+        elif chosen == open_action:
+            self._open_queue_path(row, False)
+        elif chosen == folder_action:
+            self._open_queue_path(row, True)
+        elif chosen == copy_action:
+            self._copy_queue_path(row)
+        elif chosen == remove_action:
+            self.queue.removeRow(row)
+
+    def _library_context_menu(self, position: Any) -> None:
+        row = self.library.rowAt(position.y())
+        if row < 0:
+            return
+        self.library.selectRow(row)
+        item = self.library.item(row, 0)
+        path = Path(item.data(Qt.ItemDataRole.UserRole) or "") if item else Path()
+        menu = QMenu(self)
+        info_action = menu.addAction("File information")
+        play_action = menu.addAction("Play")
+        open_action = menu.addAction("Open file")
+        folder_action = menu.addAction("Open folder")
+        copy_action = menu.addAction("Copy path")
+        chosen = menu.exec(self.library.viewport().mapToGlobal(position))
+        if chosen == info_action:
+            self._show_library_file_info(row, 0)
+        elif chosen == play_action and path.is_file():
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
+        elif chosen == open_action and path.is_file():
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
+        elif chosen == folder_action and path.parent.is_dir():
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(path.parent)))
+        elif chosen == copy_action and path:
+            QGuiApplication.clipboard().setText(str(path))
+
+    def _queue_path(self, row: int) -> Path:
+        item = self.queue.item(row, 0)
+        return Path(item.data(Qt.ItemDataRole.UserRole) or "") if item else Path()
+
+    def _open_queue_path(self, row: int, folder: bool) -> None:
+        path = self._queue_path(row)
+        target = path.parent if folder else path
+        if target.exists():
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(target)))
+
+    def _copy_queue_path(self, row: int) -> None:
+        path = self._queue_path(row)
+        if path:
+            QGuiApplication.clipboard().setText(str(path))
+
+    def _show_library_file_info(self, row: int, _column: int) -> None:
+        item = self.library.item(row, 0)
+        if not item:
+            return
+        path = Path(item.data(Qt.ItemDataRole.UserRole) or "")
+        info = load_downloaded_file_info(path, self.settings.ffmpeg_path)
+        QMessageBox.information(self, "File information", f"Path: {info.path}\nSize: {info.size_display}\nTechnical: {info.technical_display}")
+
+    def _show_queue_file_info(self, row: int, _column: int) -> None:
+        if row >= self.queue.rowCount():
+            return
+        item = self.queue.item(row, 0)
+        if not item:
+            return
+        path = Path(item.data(Qt.ItemDataRole.UserRole) or "")
+        if not path.is_file():
+            return
+        info = load_downloaded_file_info(path)
+        QMessageBox.information(
+            self,
+            "File information",
+            f"Path: {info.path}\nSize: {info.size_display}\nTechnical: {info.technical_display}",
+        )
+
     def _append_download_path(self, path: str) -> None:
         path = path.strip()
         if not path or path in self._reported_download_paths:
             return
         self._reported_download_paths.add(path)
+        path_object = Path(path)
+        if path_object.is_file() and path_object not in self._session_files:
+            self._session_files.append(path_object)
         self.download_log.append(path)
         self.download_log.ensureCursorVisible()
+        self._refresh_library()
 
     def _download_failed(self, row: int, message: str) -> None:
         self.download_button.setEnabled(True)
@@ -606,6 +786,16 @@ class MainWindow(QMainWindow):
     def _download_done(self, row: int, result: list[Path]) -> None:
         self.download_button.setEnabled(True)
         self._update_queue(row, 100, f"Saved {len(result)} item(s)")
+        if result:
+            for path in result:
+                if path not in self._session_files:
+                    self._session_files.append(path)
+            item = self.queue.item(row, 0)
+            if item:
+                item.setText(result[0].name if len(result) == 1 else f"{result[0].parent} ({len(result)} files)")
+                item.setData(Qt.ItemDataRole.UserRole, str(result[0]))
+                item.setToolTip("Double-click to view file information")
+            self._refresh_library()
         self.url_input.clear()
         for path in result:
             self._append_download_path(str(path))

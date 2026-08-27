@@ -19,7 +19,7 @@ from requests.adapters import HTTPAdapter
 
 from .api import TidalApi
 from .crypto import decrypt_file, decrypt_security_token
-from .models import PlaybackInfo, Quality, Settings, Track
+from .models import DownloadedFileInfo, PlaybackInfo, Quality, Settings, Track
 from .paths import existing_file, extension_for, parse_media_url, sanitize_filename, track_path, unique_path
 from .stream import fetch_track_stream, fetch_video_segments
 
@@ -149,8 +149,10 @@ class HiResDownloader:
 
         manifest, playback = fetch_track_stream(self.api, track.id, self.settings.quality_audio)
         if self.settings.quality_audio is Quality.HIRES and playback.bit_depth is not None and playback.bit_depth < 24:
-            raise DownloadError(
-                f"Track {track.id} returned {playback.bit_depth}-bit audio instead of Hi-Res Lossless"
+            log.warning(
+                "Track %s returned %s-bit audio; downloading the highest available quality",
+                track.id,
+                playback.bit_depth,
             )
         urls = self._absolute_urls(manifest.urls)
         if not urls:
@@ -189,6 +191,29 @@ class HiResDownloader:
         if playback.bit_depth is not None and playback.bit_depth >= 24:
             return Quality.HIRES.api_value
         return playback.audio_quality
+
+    def file_info(
+        self,
+        path: Path,
+        *,
+        playback: PlaybackInfo | None = None,
+        track: Track | None = None,
+        collection: str | None = None,
+    ) -> DownloadedFileInfo:
+        """Build displayable information without failing a completed download."""
+        info = DownloadedFileInfo(
+            path=str(path),
+            size_bytes=path.stat().st_size if path.exists() else 0,
+            format=path.suffix.removeprefix(".").upper() or None,
+            quality=self._effective_quality(playback) if playback else None,
+            bit_depth=playback.bit_depth if playback else None,
+            sample_rate=playback.sample_rate if playback else None,
+            title=track.display_title if track else None,
+            artist=track.artist_name if track else None,
+            album=track.album.name if track and track.album else None,
+            collection=collection,
+        )
+        return info
 
     def _report_saved(self, path: Path) -> None:
         log.info("Saved song: %s", path)
@@ -320,13 +345,6 @@ class HiResDownloader:
                 return
             tagged.replace(path)
 
-    @staticmethod
-    def _write_sidecar_metadata(path: Path, track: Track, playback: PlaybackInfo) -> None:
-        sidecar = path.with_name(path.name + ".json")
-        sidecar.write_text(json.dumps({"track_id": track.id, "title": track.display_title,
-            "artist": track.artist_name, "album": track.album.name if track.album else None,
-            "quality": HiResDownloader._effective_quality(playback), "bit_depth": playback.bit_depth,
-            "sample_rate": playback.sample_rate}, indent=2) + "\n", encoding="utf-8")
 
     def _write_playlist(self, paths: list[Path], playlist_name: str | None) -> None:
         if not playlist_name or not self.settings.playlist_folder or not paths:
@@ -335,3 +353,92 @@ class HiResDownloader:
         extension = self.settings.playlist_format if self.settings.playlist_format in {"m3u", "m3u8"} else "m3u8"
         playlist = directory / f"{sanitize_filename(playlist_name)}.{extension}"
         playlist.write_text("#EXTM3U\n" + "\n".join(path.name for path in sorted(paths)) + "\n", encoding="utf-8")
+
+    @staticmethod
+    def _write_sidecar_metadata(path: Path, track: Track, playback: PlaybackInfo) -> None:
+        sidecar = path.with_name(path.name + ".json")
+        sidecar.write_text(json.dumps({"track_id": track.id, "title": track.display_title,
+            "artist": track.artist_name, "album": track.album.name if track.album else None,
+            "quality": HiResDownloader._effective_quality(playback), "bit_depth": playback.bit_depth,
+            "sample_rate": playback.sample_rate}, indent=2) + "\n", encoding="utf-8")
+
+
+def _ffprobe_path(ffmpeg_path: str = "") -> str | None:
+    executable = Path(ffmpeg_path).with_name("ffprobe") if ffmpeg_path else Path("ffprobe")
+    if executable.is_absolute() and executable.exists():
+        return str(executable)
+    return str(executable) if shutil.which(str(executable)) else None
+
+
+def _probe_file(path: Path, ffmpeg_path: str = "") -> dict[str, object]:
+    executable = _ffprobe_path(ffmpeg_path)
+    if not executable:
+        return {}
+    try:
+        result = subprocess.run(
+            [executable, "-v", "error", "-show_format", "-show_streams", "-of", "json", str(path)],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        if result.returncode:
+            return {}
+        raw = json.loads(result.stdout)
+        if not isinstance(raw, dict):
+            return {}
+        format_data = raw.get("format") if isinstance(raw.get("format"), dict) else {}
+        streams = raw.get("streams") if isinstance(raw.get("streams"), list) else []
+        audio = next((stream for stream in streams if isinstance(stream, dict) and stream.get("codec_type") == "audio"), {})
+        tags = format_data.get("tags") if isinstance(format_data.get("tags"), dict) else {}
+        return {
+            "format": format_data.get("format_name"),
+            "quality": tags.get("comment") or tags.get("quality"),
+            "bit_depth": audio.get("bits_per_raw_sample") or audio.get("bits_per_sample"),
+            "sample_rate": audio.get("sample_rate"),
+            "title": tags.get("title"),
+            "artist": tags.get("artist"),
+            "album": tags.get("album"),
+        }
+    except (OSError, ValueError, subprocess.SubprocessError):
+        log.debug("Could not probe media file: %s", path, exc_info=True)
+        return {}
+
+
+def load_downloaded_file_info(path: Path, ffmpeg_path: str = "") -> DownloadedFileInfo:
+    """Read filesystem, sidecar, or ffprobe data for an existing download."""
+    data: dict[str, object] = {}
+    sidecar = path.with_name(path.name + ".json")
+    if sidecar.is_file():
+        try:
+            raw = json.loads(sidecar.read_text(encoding="utf-8"))
+            if isinstance(raw, dict):
+                data = raw
+        except (OSError, ValueError):
+            log.debug("Could not read metadata sidecar: %s", sidecar, exc_info=True)
+    if not data:
+        data = _probe_file(path, ffmpeg_path)
+    bit_depth = data.get("bit_depth")
+    sample_rate = data.get("sample_rate")
+    return DownloadedFileInfo(
+        path=str(path),
+        size_bytes=path.stat().st_size if path.exists() else 0,
+        format=str(data.get("format") or path.suffix.removeprefix(".").upper() or "") or None,
+        quality=str(data.get("quality")) if data.get("quality") else None,
+        bit_depth=int(bit_depth) if isinstance(bit_depth, (int, float, str)) and str(bit_depth).isdigit() else None,
+        sample_rate=int(float(sample_rate)) if isinstance(sample_rate, (int, float, str)) and str(sample_rate).replace(".", "", 1).isdigit() else None,
+        title=str(data["title"]) if data.get("title") else None,
+        artist=str(data["artist"]) if data.get("artist") else None,
+        album=str(data["album"]) if data.get("album") else None,
+    )
+
+
+def find_downloaded_files(root: Path) -> list[Path]:
+    """Return media files in album, playlist, and discography folders."""
+    if not root.is_dir():
+        return []
+    extensions = {".flac", ".m4a", ".mp3", ".mp4", ".ts", ".wav", ".ogg", ".opus"}
+    return sorted(
+        (path for path in root.rglob("*") if path.is_file() and path.suffix.lower() in extensions and not path.name.startswith(".")),
+        key=lambda path: str(path).casefold(),
+    )
+

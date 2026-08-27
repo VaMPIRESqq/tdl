@@ -14,8 +14,8 @@ from unittest.mock import patch
 from tdl.auth import TidalAuth
 from tdl.api import TidalApi
 from tdl.crypto import decrypt_file
-from tdl.downloader import DownloadError, HiResDownloader
-from tdl.models import PlaybackInfo, Quality, Settings, StreamManifest, Track
+from tdl.downloader import DownloadError, HiResDownloader, load_downloaded_file_info
+from tdl.models import DownloadedFileInfo, PlaybackInfo, Quality, Settings, StreamManifest, Track
 from tdl.paths import extension_for, parse_media_url, sanitize_filename
 from tdl.stream import parse_bts, parse_m3u8, parse_mpd
 from tdl.tui import QUALITY_LABELS, TuiApp
@@ -73,6 +73,24 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(encoded["quality_audio"], "hi_res_lossless")
         self.assertEqual(encoded["metadata_cover_dimension"], "px640")
 
+    def test_downloaded_file_info_formats_size_and_technical_data(self) -> None:
+        info = DownloadedFileInfo(path="song.flac", size_bytes=1536, format="FLAC", quality="LOSSLESS", bit_depth=16, sample_rate=44100)
+        self.assertEqual(info.size_display, "1.5 KiB")
+        self.assertEqual(info.technical_display, "FLAC · LOSSLESS · 16-bit · 44.1 kHz")
+
+    def test_downloaded_file_info_reads_sidecar(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "song.flac"
+            path.write_bytes(b"audio")
+            path.with_name(path.name + ".json").write_text(json.dumps({
+                "quality": "LOSSLESS", "bit_depth": 16, "sample_rate": 44100,
+                "title": "Song", "artist": "Artist", "album": "Album",
+            }), encoding="utf-8")
+            info = load_downloaded_file_info(path)
+        self.assertEqual(info.title, "Song")
+        self.assertEqual(info.artist, "Artist")
+        self.assertEqual(info.technical_display, "FLAC · LOSSLESS · 16-bit · 44.1 kHz")
+
     def test_paths_and_quality(self) -> None:
         self.assertEqual(parse_media_url("https://listen.tidal.com/track/42?x=1"), ("track", "42"))
         self.assertEqual(sanitize_filename("bad:/name"), "bad__name")
@@ -95,6 +113,20 @@ class CoreTests(unittest.TestCase):
         pool = downloader.http.get_adapter("https://").poolmanager.connection_pool_kw["maxsize"]
         self.assertEqual(pool, 20)
 
+    def test_gui_imports_context_menu_support(self) -> None:
+        from tdl import gui
+
+        self.assertTrue(hasattr(gui, "QMenu"))
+        self.assertTrue(hasattr(gui, "QGuiApplication"))
+
+    def test_gui_normalises_bulk_urls(self) -> None:
+        from tdl.gui import MainWindow
+
+        self.assertEqual(
+            MainWindow._normalise_urls(" https://a.test/track/1\ninvalid\nhttps://a.test/track/1\nhttps://a.test/album/2 "),
+            ["https://a.test/track/1", "https://a.test/album/2"],
+        )
+
     def test_tui_quality_labels_cover_all_audio_options(self) -> None:
         self.assertEqual(set(QUALITY_LABELS), set(Quality))
         self.assertTrue(all(label for label in QUALITY_LABELS.values()))
@@ -110,6 +142,13 @@ class CoreTests(unittest.TestCase):
                 logging.getLogger("tdl.test").error("download log")
         self.assertEqual(stdout.getvalue(), "")
         self.assertEqual(stderr.getvalue(), "")
+
+    def test_tui_file_info_formatter_includes_catalog_and_technical_data(self) -> None:
+        info = DownloadedFileInfo(path="song.flac", size_bytes=2048, format="FLAC", quality="HI_RES_LOSSLESS", bit_depth=24, sample_rate=96000, title="Song", artist="Artist", album="Album")
+        lines = TuiApp._file_info_lines(info, 100)
+        self.assertIn("Size: 2.0 KiB", lines)
+        self.assertIn("Technical: FLAC · HI_RES_LOSSLESS · 24-bit · 96 kHz", lines)
+        self.assertIn("Track: Artist - Song", lines)
 
     def test_tui_dashboard_formatters_fit_and_fill(self) -> None:
         self.assertEqual(TuiApp._fit("short", 8), "short")
@@ -165,16 +204,28 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(fetch_stream.call_count, 2)
         self.assertEqual([call.args[1:] for call in fetch_stream.call_args_list], [(401, Quality.HIRES), (402, Quality.HIRES)])
 
-    def test_hires_download_rejects_lower_bit_depth(self) -> None:
+    def test_hires_download_warns_but_accepts_lower_bit_depth(self) -> None:
         settings = Settings(quality_audio=Quality.HIRES)
         api = TidalApi()
         downloader = HiResDownloader(api, settings)
         track = Track(id=501, title="Fallback track")
         playback = PlaybackInfo(track_id=501, audio_quality=Quality.LOSSLESS.api_value, bit_depth=16)
         manifest = StreamManifest(urls=["https://cdn.test/segment"], codecs="flac")
-        with patch("tdl.downloader.fetch_track_stream", return_value=(manifest, playback)):
-            with self.assertRaisesRegex(DownloadError, "returned 16-bit audio instead of Hi-Res Lossless"):
-                downloader._download_track_data(track)
+        with tempfile.TemporaryDirectory() as directory:
+            downloader.settings.download_base_path = directory
+            with patch("tdl.downloader.fetch_track_stream", return_value=(manifest, playback)):
+                with patch("tdl.downloader.log.warning") as warning:
+                    with patch.object(downloader, "_download_segments", side_effect=lambda _urls, path: path.write_bytes(b"audio")):
+                        with patch.object(downloader, "_report_saved"):
+                            with patch.object(downloader, "_write_track_artifacts"):
+                                result = downloader._download_track_data(track)
+            warning.assert_called_once_with(
+                "Track %s returned %s-bit audio; downloading the highest available quality",
+                501,
+                16,
+            )
+            self.assertTrue(result.name.endswith(".flac"))
+            self.assertEqual(result.read_bytes(), b"audio")
 
     def test_hires_download_accepts_24_bit_lossless_label(self) -> None:
         settings = Settings(quality_audio=Quality.HIRES)

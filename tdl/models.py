@@ -207,6 +207,40 @@ class Track:
 
 
 @dataclass
+class DownloadedFileInfo:
+    """Technical and catalog information displayed for a downloaded file."""
+
+    path: str
+    size_bytes: int = 0
+    format: str | None = None
+    quality: str | None = None
+    bit_depth: int | None = None
+    sample_rate: int | None = None
+    title: str | None = None
+    artist: str | None = None
+    album: str | None = None
+    collection: str | None = None
+
+    @property
+    def size_display(self) -> str:
+        value = float(self.size_bytes)
+        for unit in ("B", "KiB", "MiB", "GiB"):
+            if value < 1024 or unit == "GiB":
+                return f"{value:.1f} {unit}" if unit != "B" else f"{int(value)} B"
+            value /= 1024
+        return f"{value:.1f} GiB"
+
+    @property
+    def technical_display(self) -> str:
+        details = [item for item in (self.format, self.quality) if item]
+        if self.bit_depth:
+            details.append(f"{self.bit_depth}-bit")
+        if self.sample_rate:
+            details.append(f"{self.sample_rate / 1000:g} kHz")
+        return " · ".join(details) or "Unknown technical information"
+
+
+@dataclass
 class StreamManifest:
     urls: list[str]
     codecs: str | None = None

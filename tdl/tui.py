@@ -7,12 +7,13 @@ import io
 import logging
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager, redirect_stderr, redirect_stdout
+from pathlib import Path
 from typing import Any
 
 from .api import TidalApi
 from .auth import TidalAuth
-from .downloader import HiResDownloader
-from .models import Quality, Settings
+from .downloader import HiResDownloader, load_downloaded_file_info
+from .models import DownloadedFileInfo, Quality, Settings
 from .storage import load_settings, save_settings
 
 
@@ -40,6 +41,7 @@ class TuiApp:
         self.download_total = 0
         self.download_message = "Ready for a TIDAL URL"
         self.last_saved: list[str] = []
+        self.session_files: list[Path] = []
         self.focused_action = 0
         self.action_zones: list[tuple[int, int, int, int]] = []
         self.search_zones: list[tuple[int, int, int, Any]] = []
@@ -147,7 +149,7 @@ class TuiApp:
         elif action == 3:
             self.settings_menu()
         elif action == 4:
-            self.running = False
+            self.show_library()
 
     def _init_colors(self) -> None:
         self.color_title = 0
@@ -259,8 +261,8 @@ class TuiApp:
         self._draw_button_row(row + 1, width)
 
     def _draw_button_row(self, row: int, width: int) -> None:
-        long_labels = ("DOWNLOAD", "SEARCH", "PKCE LOGIN", "SETTINGS", "QUIT")
-        short_labels = ("DL", "SEARCH", "LOGIN", "CFG", "QUIT")
+        long_labels = ("DOWNLOAD", "SEARCH", "PKCE LOGIN", "SETTINGS", "FILES")
+        short_labels = ("DL", "SEARCH", "LOGIN", "CFG", "FILES")
         labels = long_labels if width >= 72 else short_labels
         x = 1
         for index, (key_name, label) in enumerate(zip("1234Q", labels)):
@@ -351,6 +353,59 @@ class TuiApp:
 
     def _width(self) -> int:
         return self.screen.getmaxyx()[1]
+
+    @staticmethod
+    def _file_info_lines(info: DownloadedFileInfo, width: int) -> list[str]:
+        lines = [
+            f"Path: {info.path}",
+            f"Size: {info.size_display}",
+            f"Technical: {info.technical_display}",
+        ]
+        if info.title or info.artist or info.album:
+            lines.append(f"Track: {info.artist or 'Unknown artist'} - {info.title or 'Unknown title'}")
+            lines.append(f"Album: {info.album or 'Unknown album'}")
+        return [TuiApp._fit(line, width) for line in lines]
+
+    def show_library(self) -> None:
+        files = [Path(path) for path in self.session_files if Path(path).is_file()]
+        selected = 0
+        while True:
+            self._clear()
+            self._header("tdl", "DOWNLOADED FILES")
+            height, width = self.screen.getmaxyx()
+            self._panel(4, 0, max(5, height - 7), width, "ALBUMS / PLAYLISTS / DISCOGRAPHY")
+            self._text(5, 2, "UP/DOWN select   ENTER details   B back", curses.A_DIM)
+            visible = max(1, height - 9)
+            if not files:
+                self._text(7, 2, "No downloaded media files found.", curses.A_DIM)
+            start = max(0, min(selected - visible + 1, len(files) - visible))
+            for offset, path in enumerate(files[start:start + visible]):
+                row = 7 + offset
+                info = load_downloaded_file_info(path, self.settings.ffmpeg_path)
+                value = f"{'>' if start + offset == selected else ' '} {path.name} | {info.size_display} | {info.technical_display}"
+                self._text(row, 2, self._fit(value, width - 4), (curses.A_REVERSE | self.color_selected) if start + offset == selected else 0)
+            self._footer("up/down move  enter details  b back")
+            key, _x, _y, _bstate = self._read_event()
+            if key in (ord("b"), ord("B"), 27, curses.KEY_BACKSPACE, 127):
+                return
+            if key in (curses.KEY_UP, ord("k")) and files:
+                selected = (selected - 1) % len(files)
+            elif key in (curses.KEY_DOWN, ord("j")) and files:
+                selected = (selected + 1) % len(files)
+            elif key in (curses.KEY_ENTER, 10, 13, ord(" ")) and files:
+                self._show_file_info(str(files[selected]))
+            elif key in (ord("q"), ord("Q")):
+                self.running = False
+                return
+
+    def _show_file_info(self, path: str) -> None:
+        info = load_downloaded_file_info(Path(path), self.settings.ffmpeg_path)
+        self._clear()
+        self._header("tdl", "FILE INFORMATION")
+        self._panel(4, 0, max(7, self.screen.getmaxyx()[0] - 7), self._width(), "DOWNLOADED FILE")
+        for index, line in enumerate(self._file_info_lines(info, self._width() - 4), 6):
+            self._text(index, 2, line, self.color_accent if index == 8 else 0)
+        self._pause("File information")
 
     def _pause(self, message: str | None = None) -> None:
         if message:
@@ -444,9 +499,15 @@ class TuiApp:
             self.download_status = "COMPLETE"
             self.download_message = f"Downloaded {len(paths)} file(s)"
             self.last_saved = [str(path) for path in paths]
+            self.session_files = [Path(path) for path in paths]
             self._text(7, 2, self.download_status, curses.A_BOLD | self.color_accent)
+            if paths:
+                info = load_downloaded_file_info(paths[0], self.settings.ffmpeg_path)
+                self.download_message = f"{info.size_display} · {info.technical_display}"
             self._text(9, 2, self._fit(self.download_message, self._width() - 4), self.color_accent)
             self._pause("Download complete")
+            if self.last_saved:
+                self._show_file_info(self.last_saved[0])
         except Exception as exc:
             self.download_status = "ERROR"
             self.download_message = str(exc)
