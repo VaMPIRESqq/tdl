@@ -6,6 +6,15 @@
 - A TIDAL subscription that includes the requested quality
 - FFmpeg for embedded tags, cover art, and FLAC extraction
 
+## Install
+
+For a normal GUI launch without Python, download the ready-made archive from GitHub Releases:
+
+- Linux x86_64: `tdl-gui-linux-x86_64.tar.gz`, then run `tdl-gui/tdl-gui`.
+- Windows x86_64: `tdl-gui-windows-x86_64.zip`, then run `tdl-gui/tdl-gui.exe`.
+
+The archive already includes Python, PySide6, and the application. FFmpeg is distributed separately and is required for FLAC extraction, embedded tags, artwork, and lyrics. Add it to `PATH` or set its path in Settings.
+
 ## Install from source
 
 ```bash

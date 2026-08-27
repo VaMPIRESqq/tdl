@@ -20,10 +20,17 @@
 - FLAC extraction, FFmpeg metadata tags, cover art, lyrics, and collision-safe paths
 - PySide6/Qt6 GUI with background search, authentication, settings, and download queue
 - CLI for scripted track, album, and playlist downloads
+- Portable GUI releases for Linux x86_64 and Windows x86_64
 
 ## Install
 
-Python 3.11+ is required.
+Python 3.11+ is required for running from source.
+
+For a normal desktop installation, download the latest `tdl-gui-linux-x86_64.tar.gz` or `tdl-gui-windows-x86_64.zip` from the GitHub Releases page. These packages include Python, PySide6, and the application itself; Python does not need to be installed separately. Linux users should extract the archive and run `tdl-gui/tdl-gui`. Windows users should extract the archive and run `tdl-gui.exe` from the extracted `tdl-gui` folder.
+
+The portable GUI does not include FFmpeg. Install FFmpeg separately and either put it on `PATH` or set its full path in **Settings** if you want FLAC extraction, embedded tags, artwork, or lyrics.
+
+To run from source:
 
 ```bash
 python -m venv .venv
@@ -81,6 +88,16 @@ Important settings include:
 | `lyrics_file` | `false` | Save downloaded lyrics as a `.lrc` file |
 
 When both `lyrics_embed` and `lyrics_file` are enabled, the lyrics are stored in both places. FFmpeg is required for embedded tags; the `.lrc` file can be saved without FFmpeg.
+
+## Releases
+
+Tagged versions are built by GitHub Actions and publish these desktop packages automatically:
+
+- `tdl-gui-linux-x86_64.tar.gz` for Linux x86_64
+- `tdl-gui-windows-x86_64.zip` for Windows x86_64
+- Python source and wheel packages for development and scripted use
+
+The packages are portable archives rather than installers. This keeps the first release simple and makes it possible to inspect or remove the application without changing system-wide settings. Hi-Res Lossless still requires PKCE authentication, just like the source version.
 
 ## Development
 

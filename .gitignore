@@ -8,6 +8,7 @@ env/
 build/
 dist/
 *.spec
+!packaging/tdl-gui.spec
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
