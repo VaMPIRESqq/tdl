@@ -40,6 +40,7 @@ class TuiApp:
         self.download_current = 0
         self.download_total = 0
         self.download_message = "Ready for a TIDAL URL"
+        self.download_track = ""
         self.last_saved: list[str] = []
         self.session_files: list[Path] = []
         self.focused_action = 0
@@ -249,9 +250,9 @@ class TuiApp:
         else:
             detail = "awaiting input"
         self._text(row + 5, col + 2, detail, curses.A_DIM)
-        self._text(row + 7, col + 2, "STREAM", curses.A_BOLD | self.color_title)
-        self._text(row + 8, col + 2, self._fit(self.download_message, inner))
-        if height > 11:
+        self._text(row + 6, col + 2, "TRACK", curses.A_BOLD | self.color_title)
+        self._text(row + 7, col + 2, self._fit(self.download_track or "-", inner))
+        if height > 10:
             self._text(row + height - 2, col + 2, "[1] start download", curses.A_DIM)
 
     def _draw_actions(self, row: int, width: int) -> None:
@@ -470,15 +471,28 @@ class TuiApp:
         self.download_current = 0
         self.download_total = 0
         self.download_message = "Connecting to TIDAL"
+        self.download_track = ""
         self.last_saved = []
         self._clear()
         self._header("tdl", "DOWNLOAD SESSION")
-        self._panel(4, 0, 7, self._width(), "DOWNLOAD PIPELINE")
+        self._panel(4, 0, 8, self._width(), "DOWNLOAD PIPELINE")
         self._text(5, 2, "URL", curses.A_DIM)
         self._text(5, 14, self._fit(url, self._width() - 17))
         self._text(7, 2, self.download_status, curses.A_BOLD | self.color_accent)
         self._text(8, 2, self._progress_bar(0, 0, max(3, self._width() - 4)), self.color_accent)
+        self._text(10, 2, "TRACK", curses.A_DIM)
+        self._text(10, 14, self._fit(self.download_track or "-", self._width() - 17))
         self._footer("downloading...",)
+
+    @staticmethod
+    def _track_from_message(message: str, previous: str) -> str:
+        """Keep the current track name; segment/progress noise must not overwrite it."""
+        text = (message or "").strip()
+        if not text or text.startswith("Downloading segments") or text.startswith("Saved:"):
+            return previous
+        if text.startswith("Failed:") or text.startswith("Completed") or text.startswith("Connecting"):
+            return previous
+        return text
 
     def _download(self, url: str) -> None:
         self._draw_download(url)
@@ -487,10 +501,15 @@ class TuiApp:
             self.download_current = current
             self.download_total = total
             self.download_message = message
+            self.download_track = self._track_from_message(message, self.download_track)
             self.message = f"{current}/{total}"
             self._text(7, 2, self._fit(self.download_status, 12), curses.A_BOLD | self._status_color())
             self._text(8, 2, self._progress_bar(current, total, max(3, self._width() - 4)), self.color_accent)
+            self._text(9, 2, " " * max(1, self._width() - 3))
             self._text(9, 2, self._fit(message, self._width() - 4))
+            self._text(10, 2, " " * max(1, self._width() - 3))
+            self._text(10, 2, "TRACK", curses.A_DIM)
+            self._text(10, 14, self._fit(self.download_track or "-", self._width() - 17), self.color_accent)
             self.screen.refresh()
 
         try:
