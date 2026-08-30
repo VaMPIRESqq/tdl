@@ -17,7 +17,7 @@ from urllib.parse import urljoin
 import requests
 from requests.adapters import HTTPAdapter
 
-from .api import TidalApi
+from .api import TidalApi, TidalApiError
 from .crypto import decrypt_file, decrypt_security_token
 from .models import DownloadedFileInfo, PlaybackInfo, Quality, Settings, Track
 from .paths import existing_file, extension_for, parse_media_url, sanitize_filename, track_path, unique_path
@@ -105,6 +105,8 @@ class HiResDownloader:
         """
         completed: list[Path] = []
         total = len(tracks)
+        if self.settings.async_downloads and self.settings.downloads_concurrent_max > 1:
+            return self._download_tracks_concurrent(tracks, playlist_name)
         for index, track_reference in enumerate(tracks, 1):
             title = track_reference.display_title or str(track_reference.id)
             self.progress(index - 1, total, f"{track_reference.artist_name} - {title}")
@@ -125,6 +127,41 @@ class HiResDownloader:
         self._write_playlist(completed, playlist_name)
         self.progress(total, total, f"Completed {len(completed)}/{total}")
         return completed
+
+    def _download_tracks_concurrent(self, tracks: list[Track], playlist_name: str | None) -> list[Path]:
+        """Download collection tracks concurrently only when explicitly enabled."""
+        completed: list[Path] = []
+        total = len(tracks)
+        def download(reference: Track) -> Path:
+            try:
+                track = self.api.get_track(reference.id)
+            except TidalApiError as exc:
+                if self._is_missing_track_error(exc):
+                    raise DownloadError(f"Track {reference.id} is unavailable or was removed; skipped") from exc
+                raise
+            return self._download_track_data(track, playlist_name=playlist_name)
+        with ThreadPoolExecutor(max_workers=max(1, min(self.settings.downloads_concurrent_max, 32))) as pool:
+            futures = {pool.submit(download, reference): reference for reference in tracks}
+            for index, future in enumerate(as_completed(futures), 1):
+                reference = futures[future]
+                try:
+                    completed.append(future.result())
+                    self.progress(index, total, f"Completed {index}/{total}: {reference.display_title}")
+                except Exception as exc:
+                    if self._is_missing_track_error(exc):
+                        log.warning("Track %s is unavailable or was removed; skipping", reference.id)
+                    else:
+                        log.error("Track %s failed: %s", reference.id, exc)
+                    self.progress(index, total, f"Skipped: {reference.display_title}: {exc}")
+        self._write_playlist(completed, playlist_name)
+        self.progress(total, total, f"Completed {len(completed)}/{total}")
+        return completed
+
+    @staticmethod
+    def _is_missing_track_error(error: BaseException) -> bool:
+        """Return true for TIDAL's permanent missing-track response."""
+        text = str(error).lower()
+        return "returned 404" in text and ("track" in text or '"substatus":2001' in text)
 
     def download_track(self, track_id: int, playlist_name: str | None = None) -> Path:
         """Fetch and download one canonical track resource directly."""

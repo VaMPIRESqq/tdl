@@ -39,6 +39,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="tdl", description="TIDAL Hi-Res downloader")
     parser.add_argument("urls", nargs="*", help="TIDAL URLs to download")
     parser.add_argument("--quality", choices=[quality.value for quality in Quality], help="audio quality")
+    parser.add_argument("--async-downloads", action="store_true", help="download collection tracks concurrently")
+    parser.add_argument("--workers", type=int, choices=range(1, 33), metavar="N", help="maximum concurrent tracks (default: 1)")
     subparsers = parser.add_subparsers(dest="command")
     login = subparsers.add_parser("login", help="authenticate with TIDAL")
     login.add_argument("--pkce", action="store_true", help="use PKCE authentication required for Hi-Res")
@@ -58,6 +60,10 @@ def main(argv: list[str] | None = None) -> int:
     settings = load_settings()
     if args.quality:
         settings.quality_audio = Quality(args.quality)
+    if args.async_downloads:
+        settings.async_downloads = True
+    if args.workers:
+        settings.downloads_concurrent_max = args.workers
     api = TidalApi()
     auth = TidalAuth(api)
     if args.command == "login":

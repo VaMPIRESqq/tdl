@@ -12,7 +12,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from tdl.auth import TidalAuth
-from tdl.api import TidalApi
+from tdl.api import TidalApi, TidalApiError
 from tdl.crypto import decrypt_file
 from tdl.downloader import DownloadError, HiResDownloader, load_downloaded_file_info
 from tdl.models import DownloadedFileInfo, PlaybackInfo, Quality, Settings, StreamManifest, Track
@@ -168,6 +168,19 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(app.focused_action, 4)
         app._move_action(1)
         self.assertEqual(app.focused_action, 0)
+
+    def test_missing_collection_track_is_skipped_without_traceback(self) -> None:
+        settings = Settings(async_downloads=True, downloads_concurrent_max=2, download_delay=False)
+        api = TidalApi()
+        downloader = HiResDownloader(api, settings)
+        missing = Track(id=70449861, title="Removed track")
+        error = TidalApiError('API tracks/70449861 returned 404: {"status":404,"subStatus":2001,"userMessage":"Track [70449861] not found"}')
+        with patch.object(api, "get_track", side_effect=error):
+            with patch.object(downloader, "_download_track_data") as download:
+                result = downloader._download_tracks_concurrent([missing], None)
+        self.assertEqual(result, [])
+        download.assert_not_called()
+        self.assertTrue(downloader._is_missing_track_error(error))
 
     def test_collection_download_hydrates_each_track_before_download(self) -> None:
         settings = Settings(quality_audio=Quality.HIRES, download_delay=False)

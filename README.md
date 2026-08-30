@@ -19,6 +19,7 @@
 - AES-128-CTR media decryption and TIDAL security-token decoding
 - FLAC extraction, FFmpeg metadata tags, cover art, lyrics, and collision-safe paths
 - PySide6/Qt6 GUI with background search, authentication, settings, and download queue
+- Modern Textual terminal UI with responsive layout and background downloads
 - CLI for scripted track, album, and playlist downloads
 - Portable GUI releases for Linux x86_64 and Windows x86_64
 
@@ -83,6 +84,8 @@ Important settings include:
 | `skip_existing` | `true` | Avoid duplicate downloads |
 | `extract_flac` | `true` | Extract FLAC from compatible fragmented streams |
 | `downloads_simultaneous_per_track_max` | `20` | Segment concurrency |
+| `async_downloads` | `false` | Enable concurrent collection-track downloads |
+| `downloads_concurrent_max` | `1` | Maximum concurrent tracks |
 | `metadata_cover_embed` | `true` | Embed downloaded cover art |
 | `lyrics_embed` | `false` | Write downloaded lyrics into the audio tags |
 | `lyrics_file` | `false` | Save downloaded lyrics as a `.lrc` file |

@@ -5,6 +5,7 @@
 - Python 3.11 or newer
 - A TIDAL subscription that includes the requested quality
 - FFmpeg for embedded tags, cover art, and FLAC extraction
+- Textual for the modern terminal UI (installed from `requirements.txt`)
 
 ## Install
 
@@ -45,7 +46,7 @@ python -m tdl https://tidal.com/browse/track/12345
 python -m tdl --quality hi_res_lossless https://tidal.com/browse/track/12345
 ```
 
-The GUI exposes the same PKCE flow on the Account page. The TUI exposes PKCE under menu item `3`. Select `Hi-Res Lossless` only after PKCE authentication has completed.
+The GUI exposes the same PKCE flow on the Account page. The modern Textual TUI exposes PKCE under the Account tab. Select `Hi-Res Lossless` only after PKCE authentication has completed.
 
 ## Lyrics
 

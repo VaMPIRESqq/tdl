@@ -61,7 +61,8 @@ class Settings:
     downloads_simultaneous_per_track_max: int = 20
     download_delay_sec_min: float = 3.0
     download_delay_sec_max: float = 5.0
-    downloads_concurrent_max: int = 3
+    downloads_concurrent_max: int = 1
+    async_downloads: bool = False
     symlink_to_track: bool = False
     metadata_replay_gain: bool = True
     log_level: str = "info"
@@ -89,7 +90,9 @@ class Settings:
         if "playlist_format" not in data and "playlistFormat" in data:
             data["playlist_format"] = data.pop("playlistFormat")
         allowed = {name for name in cls.__dataclass_fields__}
-        return cls(**{key: value for key, value in data.items() if key in allowed})
+        settings = cls(**{key: value for key, value in data.items() if key in allowed})
+        settings.downloads_concurrent_max = max(1, min(32, int(settings.downloads_concurrent_max)))
+        return settings
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
