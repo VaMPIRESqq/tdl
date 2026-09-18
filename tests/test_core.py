@@ -21,6 +21,21 @@ from tdl.stream import parse_bts, parse_m3u8, parse_mpd
 from tdl.tui import ACTION_ORDER, QUALITY_LABELS, TuiApp
 
 
+def _pyside6_importable() -> bool:
+    """GUI tests need the PySide6 native libraries, not just the package.
+
+    On headless CI runners the pip install succeeds but importing
+    PySide6.QtGui fails on missing system libraries (libEGL.so.1); skip
+    instead of failing the whole suite.
+    """
+    try:
+        import PySide6.QtCore  # noqa: F401
+
+        return True
+    except Exception:
+        return False
+
+
 class CoreTests(unittest.TestCase):
     def test_pkce_challenge_is_s256(self) -> None:
         auth = TidalAuth.__new__(TidalAuth)
@@ -113,12 +128,14 @@ class CoreTests(unittest.TestCase):
         pool = downloader.http.get_adapter("https://").poolmanager.connection_pool_kw["maxsize"]
         self.assertEqual(pool, 20)
 
+    @unittest.skipUnless(_pyside6_importable(), "PySide6 system libraries unavailable")
     def test_gui_imports_context_menu_support(self) -> None:
         from tdl import gui
 
         self.assertTrue(hasattr(gui, "QMenu"))
         self.assertTrue(hasattr(gui, "QGuiApplication"))
 
+    @unittest.skipUnless(_pyside6_importable(), "PySide6 system libraries unavailable")
     def test_gui_normalises_bulk_urls(self) -> None:
         from tdl.gui import MainWindow
 

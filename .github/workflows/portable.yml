@@ -33,11 +33,11 @@ jobs:
           python -m pip install requests pycryptodome pyinstaller
       - name: Build terminal binary (Linux)
         if: runner.os == 'Linux'
-        run: pyinstaller --clean --noconfirm --onefile --name tdl packaging/tdl-cli.spec
+        run: pyinstaller --clean --noconfirm packaging/tdl-cli.spec
       - name: Build terminal binary (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
-        run: pyinstaller --clean --noconfirm --onefile --name tdl packaging/tdl-cli.spec
+        run: pyinstaller --clean --noconfirm packaging/tdl-cli.spec
       - name: Smoke test binary (Linux)
         if: runner.os == 'Linux'
         run: dist/tdl --help
