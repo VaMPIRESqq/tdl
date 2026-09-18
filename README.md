@@ -31,6 +31,28 @@ For a normal desktop installation, download the latest `tdl-gui-linux-x86_64.tar
 
 The portable GUI does not include FFmpeg. Install FFmpeg separately and either put it on `PATH` or set its full path in **Settings** if you want FLAC extraction, embedded tags, artwork, or lyrics.
 
+### Terminal-only binaries
+
+Headless machines, ARM boards, and minimal environments can use the terminal package with the CLI and the curses TUI (no Qt):
+
+- `tdl-cli-linux-x86_64.tar.gz` — Linux x86_64
+- `tdl-cli-linux-aarch64.tar.gz` — Linux ARM64
+- `tdl-cli-windows-x86_64.zip` — Windows
+
+Each archive contains a single self-contained `tdl` executable; run it with no arguments to open the TUI.
+
+### Android (Termux)
+
+For Termux, download `tdl-termux-aarch64.tar.gz` and run:
+
+```bash
+tar -xzf tdl-termux-aarch64.tar.gz
+cd tdl-termux-aarch64
+bash install.sh
+```
+
+Details and manual steps are in [packaging/termux/README-termux.md](packaging/termux/README-termux.md).
+
 To run from source:
 
 ```bash
