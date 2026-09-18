@@ -29,7 +29,9 @@ def _pyside6_importable() -> bool:
     instead of failing the whole suite.
     """
     try:
-        import PySide6.QtCore  # noqa: F401
+        # QtGui (not QtCore) is what pulls in libEGL and the other native
+        # libraries missing on headless CI runners.
+        import PySide6.QtGui  # noqa: F401
 
         return True
     except Exception:
