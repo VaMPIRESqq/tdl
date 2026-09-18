@@ -1,0 +1,120 @@
+name: Portable builds
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+    tags: ["v*.*.*"]
+  workflow_dispatch:
+
+jobs:
+  cli-package:
+    # Terminal-only portable build: CLI and TUI in one PyInstaller onefile
+    # binary. The Qt GUI is excluded on purpose so the archive stays small
+    # and runs on headless or ARM machines.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            platform: linux-x86_64
+          - os: ubuntu-22.04-arm
+            platform: linux-aarch64
+          - os: windows-latest
+            platform: windows-x86_64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install build dependencies
+        run: |
+          python -m pip install requests pycryptodome pyinstaller
+      - name: Build terminal binary (Linux)
+        if: runner.os == 'Linux'
+        run: pyinstaller --clean --noconfirm packaging/tdl-cli.spec
+      - name: Build terminal binary (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: pyinstaller --clean --noconfirm packaging/tdl-cli.spec
+      - name: Smoke test binary (Linux)
+        if: runner.os == 'Linux'
+        run: dist/tdl --help
+      - name: Smoke test binary (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: dist/tdl.exe --help
+      - name: Archive Linux CLI
+        if: runner.os == 'Linux'
+        run: |
+          mkdir -p stage/tdl-cli-${{ matrix.platform }}
+          cp dist/tdl stage/tdl-cli-${{ matrix.platform }}/
+          cp README.md stage/tdl-cli-${{ matrix.platform }}/
+          tar -czf tdl-cli-${{ matrix.platform }}.tar.gz -C stage tdl-cli-${{ matrix.platform }}
+      - name: Archive Windows CLI
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path stage/tdl-cli-${{ matrix.platform }} | Out-Null
+          Copy-Item dist/tdl.exe stage/tdl-cli-${{ matrix.platform }}/
+          Copy-Item README.md stage/tdl-cli-${{ matrix.platform }}/
+          Compress-Archive -Path stage/tdl-cli-${{ matrix.platform }} -DestinationPath tdl-cli-${{ matrix.platform }}.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tdl-cli-${{ matrix.platform }}
+          path: |
+            tdl-cli-*.tar.gz
+            tdl-cli-*.zip
+
+  termux-package:
+    # Termux has no PyInstaller support worth depending on, so the Android
+    # package is a zipped pure-Python bundle (tdl.pyz) plus an install
+    # script. It only needs `python` and `pip` from the Termux repos.
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build tdl.pyz
+        run: |
+          python -m pip install requests pycryptodome
+          # The tdl package itself has no __main__.py at its root, so a
+          # top-level entry script is staged next to it before zipping.
+          rm -rf build-pyz && mkdir build-pyz
+          cp -r tdl build-pyz/tdl
+          printf 'from tdl.__main__ import main\n\nraise SystemExit(main())\n' > build-pyz/__main__.py
+          python -m zipapp -p "/usr/bin/env python3" -o tdl.pyz build-pyz
+      - name: Smoke test tdl.pyz
+        run: python tdl.pyz --help
+      - name: Assemble Termux package
+        run: |
+          mkdir -p stage/tdl-termux-aarch64
+          cp tdl.pyz stage/tdl-termux-aarch64/
+          cp packaging/termux/install.sh stage/tdl-termux-aarch64/
+          cp README.md stage/tdl-termux-aarch64/
+          cp packaging/termux/README-termux.md stage/tdl-termux-aarch64/
+          tar -czf tdl-termux-aarch64.tar.gz -C stage tdl-termux-aarch64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tdl-termux-aarch64
+          path: tdl-termux-aarch64.tar.gz
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [cli-package, termux-package]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          pattern: tdl-*
+          merge-multiple: true
+      - name: Publish GitHub Release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release-assets/*
+          generate_release_notes: true
