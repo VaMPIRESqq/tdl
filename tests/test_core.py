@@ -18,7 +18,7 @@ from tdl.downloader import DownloadError, HiResDownloader, load_downloaded_file_
 from tdl.models import DownloadedFileInfo, PlaybackInfo, Quality, Settings, StreamManifest, Track
 from tdl.paths import extension_for, parse_media_url, sanitize_filename
 from tdl.stream import parse_bts, parse_m3u8, parse_mpd
-from tdl.tui import QUALITY_LABELS, TuiApp
+from tdl.tui import ACTION_ORDER, QUALITY_LABELS, TuiApp
 
 
 class CoreTests(unittest.TestCase):
@@ -130,7 +130,7 @@ class CoreTests(unittest.TestCase):
     def test_tui_quality_labels_cover_all_audio_options(self) -> None:
         self.assertEqual(set(QUALITY_LABELS), set(Quality))
         self.assertTrue(all(label for label in QUALITY_LABELS.values()))
-        self.assertTrue(callable(TuiApp._artist))
+        self.assertNotIn("search", ACTION_ORDER)
 
     def test_tui_quiet_download_suppresses_library_output(self) -> None:
         app = TuiApp.__new__(TuiApp)
@@ -165,7 +165,7 @@ class CoreTests(unittest.TestCase):
         app = TuiApp.__new__(TuiApp)
         app.focused_action = 0
         app._move_action(-1)
-        self.assertEqual(app.focused_action, 4)
+        self.assertEqual(app.focused_action, len(ACTION_ORDER) - 1)
         app._move_action(1)
         self.assertEqual(app.focused_action, 0)
 

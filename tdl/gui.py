@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import logging
+import signal
 import sys
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import QObject, QThread, Qt, Signal, Slot
+from PySide6.QtCore import QObject, QThread, Qt, QTimer, Signal, Slot
 from PySide6.QtCore import QUrl
 from PySide6.QtGui import QAction, QDesktopServices, QGuiApplication
 from PySide6.QtWidgets import (
@@ -112,6 +113,9 @@ class MainWindow(QMainWindow):
         self._bridges: list[TaskBridge] = []
         self._reported_download_paths: set[str] = set()
         self._session_files: list[Path] = []
+        self._closing = False
+        self._search_running = False
+        self._wake_on_sigint()
         self.setWindowTitle("tdl | TIDAL Hi-Res Downloader")
         self.resize(1180, 760)
         self.setMinimumSize(900, 600)
@@ -233,7 +237,6 @@ class MainWindow(QMainWindow):
             header.setSectionResizeMode(column, QHeaderView.ResizeMode.Interactive)
         header.setMinimumSectionSize(1)
         self._queue_columns_initialized = False
-        from PySide6.QtCore import QTimer
         QTimer.singleShot(0, self._fix_queue_columns)
         queue_layout.addWidget(self.queue)
         layout.addWidget(queue_box, 1)
@@ -273,9 +276,9 @@ class MainWindow(QMainWindow):
         self.search_input.setPlaceholderText("Artist, album, or track")
         self.search_input.returnPressed.connect(self.search)
         row.addWidget(self.search_input, 1)
-        search_button = QPushButton("Search")
-        search_button.clicked.connect(self.search)
-        row.addWidget(search_button)
+        self.search_button = QPushButton("Search")
+        self.search_button.clicked.connect(self.search)
+        row.addWidget(self.search_button)
         layout.addLayout(row)
         self.results = QTableWidget(0, 4)
         self.results.setHorizontalHeaderLabels(("Type", "Title", "Artist", "Action"))
@@ -294,7 +297,6 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.results, 1)
         # Apply initial widths after the parent layout has calculated the table
         # geometry without resetting widths after subsequent searches.
-        from PySide6.QtCore import QTimer
         QTimer.singleShot(0, self._fix_search_columns)
         return page
 
@@ -508,15 +510,44 @@ class MainWindow(QMainWindow):
             self._bridges.remove(bridge)
         bridge.deleteLater()
 
+    def _wake_on_sigint(self) -> None:
+        """Make Ctrl+C in the terminal close the app while Qt owns the loop.
+
+        Qt's exec() blocks in native code where Python signal handlers never
+        run. A repeating no-op timer periodically returns control to Python,
+        and SIGINT schedules the application quit on the GUI thread.
+        """
+        if getattr(signal, "SIGINT", None) is None:
+            return
+        try:
+            signal.signal(signal.SIGINT, self._handle_sigint)
+        except (ValueError, OSError):
+            return
+        self._sigint_timer = QTimer(self)
+        self._sigint_timer.setInterval(200)
+        self._sigint_timer.timeout.connect(lambda: None)
+        self._sigint_timer.start()
+
+    def _handle_sigint(self, _signum: int, _frame: Any) -> None:
+        # The handler runs on the GUI thread (between timer callbacks), and
+        # close() goes through closeEvent so workers shut down in order.
+        QTimer.singleShot(0, self.close)
+
     def closeEvent(self, event: Any) -> None:
+        self._closing = True
         # Do not let QObject parents destroy active workers while their thread
-        # is still executing; wait for each thread to finish first.
+        # is still executing. Wait for each thread to finish, but only for a
+        # bounded time so a hung download (or stuck socket) cannot block exit.
         for thread in list(self._threads):
             thread.quit()
-            # The worker may be inside a blocking HTTP request. Destroying a
-            # running QThread after a fixed timeout can crash Qt on exit, so
-            # wait until the worker has actually returned.
-            thread.wait()
+            if not thread.wait(3000):
+                thread.requestInterruption()
+                if not thread.wait(2000):
+                    # Last resort at exit: a thread stuck in a blocking HTTP
+                    # call will never observe the interruption, and leaving it
+                    # running aborts the interpreter with a Qt fatal error.
+                    thread.terminate()
+                    thread.wait(1000)
         self._threads.clear()
         self._workers.clear()
         self._bridges.clear()
@@ -524,7 +555,9 @@ class MainWindow(QMainWindow):
 
     def _show_error(self, message: str) -> None:
         self.statusBar().showMessage(message, 10000)
-        QMessageBox.critical(self, "tdl", message)
+        # A modal dialog would deadlock closeEvent's thread.wait() teardown.
+        if not self._closing:
+            QMessageBox.critical(self, "tdl", message)
 
     def _set_logged_in(self, logged_in: bool) -> None:
         if logged_in:
@@ -784,7 +817,8 @@ class MainWindow(QMainWindow):
         self.download_log.append(f"Failed: {message}")
         self.download_log.ensureCursorVisible()
         self.statusBar().showMessage(message, 10000)
-        QMessageBox.critical(self, "Download failed", message)
+        if not self._closing:
+            QMessageBox.critical(self, "Download failed", message)
 
     def _download_done(self, row: int, result: list[Path]) -> None:
         self.download_button.setEnabled(True)
@@ -809,16 +843,35 @@ class MainWindow(QMainWindow):
         query = self.search_input.text().strip()
         if not query:
             return
+        if self._search_running:
+            self.statusBar().showMessage("Previous search is still running", 5000)
+            return
+        self._search_running = True
+        self.search_button.setEnabled(False)
         self.results.setRowCount(0)
-        self._run(lambda _emit: self.api.search(query), self._render_results)
+        self.statusBar().showMessage("Searching...")
+        self._run(lambda _emit: self._search_task(query), self._render_results,
+                  failed=self._search_failed)
+
+    def _search_task(self, query: str) -> dict[str, Any]:
+        if not self.auth.restore():
+            raise RuntimeError("Session expired. Log in before searching.")
+        return self.api.search(query)
+
+    def _search_failed(self, message: str) -> None:
+        self._search_running = False
+        self.search_button.setEnabled(True)
+        self._show_error(message)
 
     def _fix_search_columns(self) -> None:
         if self._search_columns_initialized:
             return
         header = self.results.horizontalHeader()
-        widths = (64, 150, 96, 88)
-        for column, width in enumerate(widths):
-            header.resizeSection(column, width)
+        # Proportional widths keep long titles and artists readable; the last
+        # section stretches anyway because setStretchLastSection(True).
+        available = max(320, self.results.viewport().width())
+        for column, ratio in enumerate((0.09, 0.45, 0.32, 0.14)):
+            header.resizeSection(column, int(available * ratio))
         self._search_columns_initialized = True
 
     @staticmethod
@@ -833,15 +886,19 @@ class MainWindow(QMainWindow):
         return str(artist) if artist else ""
 
     @staticmethod
-    def _set_result_text(table: QTableWidget, row: int, column: int, value: Any, limit: int) -> None:
+    def _set_result_text(table: QTableWidget, row: int, column: int, value: Any) -> None:
         full_text = str(value or "")
-        display_text = full_text if len(full_text) <= limit else f"{full_text[:limit - 3]}..."
-        item = QTableWidgetItem(display_text)
-        if display_text != full_text:
+        # Never truncate result text: the table elides overflow and the
+        # tooltip carries the full value, so titles stay readable.
+        item = QTableWidgetItem(full_text)
+        if full_text:
             item.setToolTip(full_text)
         table.setItem(row, column, item)
 
     def _render_results(self, payload: dict) -> None:
+        self._search_running = False
+        self.search_button.setEnabled(True)
+        self.statusBar().clearMessage()
         tracks = payload.get("tracks", {}).get("items", [])
         albums = payload.get("albums", {}).get("items", [])
         rows = [("Track", item.get("title", item.get("name", "")), self._result_artist(item), item.get("id")) for item in tracks]
@@ -849,13 +906,17 @@ class MainWindow(QMainWindow):
         for media_type, title, artist, media_id in rows:
             row = self.results.rowCount()
             self.results.insertRow(row)
-            self._set_result_text(self.results, row, 0, media_type, 12)
-            self._set_result_text(self.results, row, 1, title, 24)
-            self._set_result_text(self.results, row, 2, artist, 18)
+            self._set_result_text(self.results, row, 0, media_type)
+            self._set_result_text(self.results, row, 1, title)
+            self._set_result_text(self.results, row, 2, artist)
             button = QPushButton("Download")
             button.clicked.connect(lambda _checked=False, mt=media_type, mid=media_id: self._download_result(mt, mid))
             self.results.setCellWidget(row, 3, button)
         self._fix_search_columns()
+        if rows:
+            self.statusBar().showMessage(f"Found {len(tracks)} track(s) and {len(albums)} album(s)", 8000)
+        else:
+            self.statusBar().showMessage("No results found", 8000)
 
     def _download_result(self, media_type: str, media_id: Any) -> None:
         self.url_input.setText(f"https://tidal.com/browse/{media_type.lower()}/{media_id}")
@@ -904,4 +965,7 @@ def run() -> int:
     app.setApplicationName("tdl")
     window = MainWindow()
     window.show()
-    return app.exec()
+    try:
+        return app.exec()
+    except KeyboardInterrupt:
+        return 130

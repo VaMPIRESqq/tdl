@@ -27,6 +27,8 @@ QUALITY_LABELS = {
     Quality.HIRES: "Hi-Res Lossless",
 }
 
+ACTION_ORDER = ("download", "login", "settings", "files", "quit")
+
 
 class TuiApp:
     """Compact ncurses dashboard with resize-safe rendering."""
@@ -47,8 +49,9 @@ class TuiApp:
         self.session_files: list[Path] = []
         self.recent_output: list[str] = []
         self.downloads: dict[str, dict[str, Any]] = {}
-        self.search_items: list[tuple[str, str, str, Any]] = []
         self.button_zones: list[tuple[int, int, int, str]] = []
+        self.focused_action = 0
+        self._input_active = False
         self._download_thread: threading.Thread | None = None
         self._lock = threading.Lock()
         self._colors()
@@ -61,16 +64,21 @@ class TuiApp:
             curses.mousemask(curses.ALL_MOUSE_EVENTS)
         except curses.error:
             pass
-        while self.running:
-            self._draw_dashboard()
-            key = self.screen.getch()
-            if key in (-1, curses.KEY_RESIZE):
-                self.screen.clear()
-                continue
-            if key == getattr(curses, "KEY_MOUSE", -1):
-                self._handle_mouse()
-                continue
-            self._handle_key(key)
+        try:
+            while self.running:
+                self._draw_dashboard()
+                key = self.screen.getch()
+                if key in (-1, curses.KEY_RESIZE):
+                    self.screen.clear()
+                    continue
+                if key == getattr(curses, "KEY_MOUSE", -1):
+                    self._handle_mouse()
+                    continue
+                self._handle_key(key)
+        except KeyboardInterrupt:
+            # Ctrl+C must leave the dashboard cleanly instead of dumping a
+            # traceback over the restored terminal.
+            self.running = False
 
     def _colors(self) -> None:
         self.title_attr = self.accent_attr = self.good_attr = self.error_attr = self.selected_attr = 0
@@ -94,18 +102,42 @@ class TuiApp:
             pass
 
     def _handle_key(self, key: int) -> None:
-        if key in (ord("q"), ord("Q"), 27):
+        if self._input_active:
+            # The inline prompt owns the keyboard; drop everything else so
+            # typed text and Enter never trigger dashboard hotkeys.
+            return
+        if key in (curses.KEY_LEFT, curses.KEY_BTAB):
+            self._move_action(-1)
+        elif key in (curses.KEY_RIGHT, 9):  # Tab
+            self._move_action(1)
+        elif ord("1") <= key <= ord("5"):
+            self._activate_action(key - ord("1"))
+        elif key in (ord("q"), ord("Q"), 27):
             self.running = False
         elif key in (ord("d"), ord("D"), 10, 13):
-            self.download_url()
-        elif key in (ord("s"), ord("S")):
-            self.search()
+            self._activate_action(getattr(self, "focused_action", 0))
         elif key in (ord("l"), ord("L")):
             self.login_pkce()
         elif key in (ord("c"), ord("C")):
             self.settings_menu()
         elif key in (ord("f"), ord("F")):
             self.show_library()
+
+    def _activate_action(self, index: int) -> None:
+        self.focused_action = index
+        self._run_action(ACTION_ORDER[index])
+
+    def _run_action(self, action: str) -> None:
+        if action == "download":
+            self.download_url()
+        elif action == "login":
+            self.login_pkce()
+        elif action == "settings":
+            self.settings_menu()
+        elif action == "files":
+            self.show_library()
+        elif action == "quit":
+            self.running = False
 
     def _draw_dashboard(self) -> None:
         self.screen.erase()
@@ -119,18 +151,24 @@ class TuiApp:
             self._draw_compact(height, width)
         else:
             self._draw_full(height, width)
-        self._text(height - 1, 1, "ENTER/D download  S search  L login  C config  F files  Q quit", curses.A_DIM)
+        self._text(height - 1, 1, "←/→ select  ENTER run  1-5 run action  D download  L login  C config  F files  Q quit", curses.A_DIM)
         self.screen.refresh()
 
     def _draw_buttons(self, row: int) -> None:
-        labels = (("DOWNLOAD", "download"), ("SEARCH", "search"), ("LOGIN", "login"), ("SETTINGS", "settings"), ("FILES", "files"), ("QUIT", "quit"))
         self.button_zones = []
+        focused = getattr(self, "focused_action", 0)
         column = 1
-        for label, action in labels:
-            text = f"[ {label} ]"
+        for index, action in enumerate(ACTION_ORDER):
+            text = f"[ {action.upper()} ]"
             if column + len(text) >= self._width() - 1:
                 break
-            self._text(row, column, text, self.selected_attr if action == "download" else self.accent_attr)
+            if index == focused:
+                # Make the keyboard focus unmistakable: inverted colors plus a
+                # caret marker directly above the selected button.
+                self._text(row - 1, column + 1, "^", self.accent_attr | curses.A_BOLD)
+                self._text(row, column, text, self.selected_attr | curses.A_REVERSE)
+            else:
+                self._text(row, column, text, self.accent_attr)
             self.button_zones.append((row, column, column + len(text) - 1, action))
             column += len(text) + 1
 
@@ -144,18 +182,7 @@ class TuiApp:
             return
         for row, left, right, action in self.button_zones:
             if y == row and left <= x <= right:
-                if action == "download":
-                    self.download_url()
-                elif action == "search":
-                    self.search()
-                elif action == "login":
-                    self.login_pkce()
-                elif action == "settings":
-                    self.settings_menu()
-                elif action == "files":
-                    self.show_library()
-                elif action == "quit":
-                    self.running = False
+                self._run_action(action)
                 return
 
     def _draw_full(self, height: int, width: int) -> None:
@@ -265,24 +292,35 @@ class TuiApp:
 
     def _move_action(self, delta: int) -> None:
         # Compatibility with the previous curses TUI navigation helper.
-        self.focused_action = (getattr(self, "focused_action", 0) + delta) % 5
+        self.focused_action = (getattr(self, "focused_action", 0) + delta) % len(ACTION_ORDER)
 
     def _prompt(self, label: str) -> str:
         """Read a line without clearing it when Enter is pressed."""
         row = max(0, self._height() - 2)
         width = self._width()
+        self._input_active = True
         self._text(row, 0, " " * max(1, width - 1))
         self._text(row, 1, label, self.accent_attr)
         self.screen.refresh()
         curses.curs_set(1)
         curses.echo()
+        # The dashboard loop runs getch() with a 1 s polling timeout; left in
+        # place it also applies to getstr() and aborts the prompt after one
+        # second, discarding everything typed so far. Block until the user
+        # finishes the line, then restore the polling timeout.
+        self.screen.timeout(-1)
         try:
             value = self.screen.getstr(row, min(len(label) + 1, width - 2), max(1, width - len(label) - 3))
         except curses.error:
             value = b""
         finally:
+            self.screen.timeout(1000)
             curses.noecho()
             curses.curs_set(0)
+            self._input_active = False
+            # Keystrokes typed while a blocking action (download bookkeeping)
+            # ran must not leak into the hotkey loop afterwards.
+            curses.flushinp()
         return value.decode(errors="replace").strip()
 
     def _ensure_auth(self) -> bool:
@@ -297,6 +335,14 @@ class TuiApp:
             return
         url = self._prompt("TIDAL URL: ")
         if not url or not self._ensure_auth():
+            return
+        self.url = url
+        self._start_download_thread(url)
+
+    def _start_download_thread(self, url: str) -> None:
+        """Start a download thread for an already-validated URL."""
+        if self._download_thread and self._download_thread.is_alive():
+            self.message = "A download is already running"
             return
         self.url = url
         self.download_status = "RUNNING"
@@ -351,21 +397,6 @@ class TuiApp:
                     item["status"] = "ERROR"
                     item["track"] = str(exc)
 
-    def search(self) -> None:
-        query = self._prompt("Search: ")
-        if not query or not self._ensure_auth():
-            return
-        try:
-            payload = self.api.search(query)
-            self.search_items = []
-            for item in payload.get("tracks", {}).get("items", []):
-                self.search_items.append(("track", item.get("title", item.get("name", "")), self._artist(item), item.get("id")))
-            for item in payload.get("albums", {}).get("items", []):
-                self.search_items.append(("album", item.get("title", item.get("name", "")), self._artist(item), item.get("id")))
-            self.message = f"Found {len(self.search_items)} result(s)"
-        except Exception as exc:
-            self.message = f"Search failed: {exc}"
-
     def login_pkce(self) -> None:
         try:
             self._with_terminal(lambda: self.auth.login_for_cli(pkce=True))
@@ -385,6 +416,14 @@ class TuiApp:
 
     def settings_menu(self) -> None:
         """Open a separate, resize-safe settings window."""
+        self._input_active = True
+        try:
+            self._settings_menu_inner()
+        finally:
+            self._input_active = False
+            curses.flushinp()
+
+    def _settings_menu_inner(self) -> None:
         draft = Settings.from_dict(self.settings.to_dict())
         fields = ["quality_audio", "async_downloads", "downloads_concurrent_max", "skip_existing", "download_base_path", "download_delay"]
         selected = 0
@@ -490,13 +529,10 @@ class TuiApp:
             self._text(max(4, self._height() - 4) + index, 2, self._fit(f"{path.name} | {info.size_display} | {info.technical_display}", self._width() - 4))
         self._text(self._height() - 1, 1, "Press any key to return", curses.A_DIM)
         self.screen.refresh()
-        self.screen.getch()
-
-    @staticmethod
-    def _artist(item: dict[str, Any]) -> str:
-        artists = item.get("artists") or []
-        names = [artist.get("name", "") for artist in artists if isinstance(artist, dict) and artist.get("name")]
-        return ", ".join(names) or str((item.get("artist") or {}).get("name", ""))
+        try:
+            self.screen.getch()
+        finally:
+            curses.flushinp()
 
     @contextmanager
     def _quiet_download(self):
